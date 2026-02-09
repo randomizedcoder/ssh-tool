@@ -1,0 +1,194 @@
+#!/usr/bin/env tclsh
+# test_router.test - Tests for mcp::router module
+
+package require tcltest
+namespace import ::tcltest::*
+
+# Source dependencies
+set script_dir [file dirname [info script]]
+source [file join $script_dir "../../lib/util.tcl"]
+source [file join $script_dir "../../lib/log.tcl"]
+source [file join $script_dir "../../lib/security.tcl"]
+source [file join $script_dir "../../lib/session.tcl"]
+source [file join $script_dir "../../lib/mcp_session.tcl"]
+source [file join $script_dir "../../lib/jsonrpc.tcl"]
+source [file join $script_dir "../../lib/router.tcl"]
+
+# Suppress log output in tests
+::mcp::log::init ERROR [open /dev/null w]
+
+# Reset state before tests
+proc setup_router {} {
+    # Reset handlers
+    set ::mcp::router::handlers [dict create]
+    ::mcp::mcp_session::reset
+    ::mcp::session::reset
+    ::mcp::security::reset_rate_limits
+}
+
+#===========================================================================
+# REGISTRATION TESTS
+#===========================================================================
+
+test router-register-1.0 {register adds handler} -setup {
+    setup_router
+} -body {
+    ::mcp::router::register "test/method" {args {return "ok"}}
+    ::mcp::router::has_method "test/method"
+} -result 1
+
+test router-register-1.1 {unregister removes handler} -setup {
+    setup_router
+} -body {
+    ::mcp::router::register "test/method" {args {return "ok"}}
+    ::mcp::router::unregister "test/method"
+    ::mcp::router::has_method "test/method"
+} -result 0
+
+test router-register-1.2 {list_methods returns all methods} -setup {
+    setup_router
+} -body {
+    ::mcp::router::register "method/a" {args {}}
+    ::mcp::router::register "method/b" {args {}}
+    set methods [::mcp::router::list_methods]
+    expr {"method/a" in $methods && "method/b" in $methods}
+} -result 1
+
+test router-register-1.3 {has_method returns false for unknown} -setup {
+    setup_router
+} -body {
+    ::mcp::router::has_method "unknown/method"
+} -result 0
+
+#===========================================================================
+# DISPATCH TESTS
+#===========================================================================
+
+test router-dispatch-2.0 {dispatch calls registered handler} -setup {
+    setup_router
+    proc test_handler {params session_id} {
+        return [dict create result "success"]
+    }
+    ::mcp::router::register "test/handler" test_handler
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+} -body {
+    set request [dict create jsonrpc "2.0" id 1 method "test/handler" params {}]
+    set response [::mcp::router::dispatch $request $mid]
+    set parsed [::mcp::jsonrpc::json_to_dict $response]
+    dict exists $parsed result
+} -cleanup {
+    rename test_handler ""
+} -result 1
+
+test router-dispatch-2.1 {dispatch returns error for unknown method} -setup {
+    setup_router
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+} -body {
+    set request [dict create jsonrpc "2.0" id 1 method "unknown/method"]
+    set response [::mcp::router::dispatch $request $mid]
+    set parsed [::mcp::jsonrpc::json_to_dict $response]
+    dict exists $parsed error
+} -result 1
+
+test router-dispatch-2.2 {dispatch returns -32601 for method not found} -setup {
+    setup_router
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+} -body {
+    set request [dict create jsonrpc "2.0" id 1 method "unknown/method"]
+    set response [::mcp::router::dispatch $request $mid]
+    set parsed [::mcp::jsonrpc::json_to_dict $response]
+    dict get [dict get $parsed error] code
+} -result "-32601"
+
+test router-dispatch-2.3 {dispatch preserves request id} -setup {
+    setup_router
+    proc test_handler {params session_id} {
+        return [dict create data test]
+    }
+    ::mcp::router::register "test/handler" test_handler
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+} -body {
+    set request [dict create jsonrpc "2.0" id 42 method "test/handler"]
+    set response [::mcp::router::dispatch $request $mid]
+    set parsed [::mcp::jsonrpc::json_to_dict $response]
+    dict get $parsed id
+} -cleanup {
+    rename test_handler ""
+} -result "42"
+
+test router-dispatch-2.4 {dispatch handles handler error} -setup {
+    setup_router
+    proc error_handler {params session_id} {
+        error "Handler failed"
+    }
+    ::mcp::router::register "test/error" error_handler
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+} -body {
+    set request [dict create jsonrpc "2.0" id 1 method "test/error"]
+    set response [::mcp::router::dispatch $request $mid]
+    set parsed [::mcp::jsonrpc::json_to_dict $response]
+    expr {[dict exists $parsed error]}
+} -cleanup {
+    rename error_handler ""
+} -result 1
+
+#===========================================================================
+# INIT TESTS
+#===========================================================================
+
+test router-init-3.0 {init registers standard methods} -setup {
+    setup_router
+} -body {
+    ::mcp::router::init
+    expr {
+        [::mcp::router::has_method "initialize"] &&
+        [::mcp::router::has_method "tools/list"] &&
+        [::mcp::router::has_method "tools/call"]
+    }
+} -result 1
+
+#===========================================================================
+# INITIALIZE HANDLER TESTS
+#===========================================================================
+
+test router-initialize-4.0 {initialize returns server info} -setup {
+    setup_router
+    ::mcp::router::init
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+} -body {
+    set request [dict create jsonrpc "2.0" id 1 method "initialize" params {}]
+    set response [::mcp::router::dispatch $request $mid]
+    set parsed [::mcp::jsonrpc::json_to_dict $response]
+    set result [dict get $parsed result]
+    dict exists $result serverInfo
+} -result 1
+
+test router-initialize-4.1 {initialize returns protocol version} -setup {
+    setup_router
+    ::mcp::router::init
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+} -body {
+    set request [dict create jsonrpc "2.0" id 1 method "initialize" params {}]
+    set response [::mcp::router::dispatch $request $mid]
+    set parsed [::mcp::jsonrpc::json_to_dict $response]
+    set result [dict get $parsed result]
+    dict exists $result protocolVersion
+} -result 1
+
+#===========================================================================
+# TOOLS/LIST HANDLER TESTS
+#===========================================================================
+
+test router-tools-list-5.0 {tools/list returns tools array} -setup {
+    setup_router
+    ::mcp::router::init
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+} -body {
+    set request [dict create jsonrpc "2.0" id 1 method "tools/list" params {}]
+    set response [::mcp::router::dispatch $request $mid]
+    set parsed [::mcp::jsonrpc::json_to_dict $response]
+    set result [dict get $parsed result]
+    dict exists $result tools
+} -result 1
+
+cleanupTests

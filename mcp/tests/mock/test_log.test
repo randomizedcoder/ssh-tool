@@ -1,0 +1,172 @@
+#!/usr/bin/env tclsh
+# test_log.test - Tests for mcp::log module
+
+package require tcltest
+namespace import ::tcltest::*
+
+# Source dependencies
+set script_dir [file dirname [info script]]
+source [file join $script_dir "../../lib/util.tcl"]
+source [file join $script_dir "../../lib/log.tcl"]
+
+# Use /dev/null as output channel to suppress log output during tests
+proc null_channel {} {
+    return [open /dev/null w]
+}
+
+test log-json-1.0 {_to_json produces valid JSON object} -body {
+    set output [::mcp::log::_to_json [dict create foo bar num 42]]
+    expr {[string index $output 0] eq "\{" && [string index $output end] eq "\}"}
+} -result 1
+
+test log-json-1.1 {_to_json handles nested dict} -body {
+    set output [::mcp::log::_to_json [dict create outer [dict create inner value]]]
+    expr {[string first "inner" $output] > 0}
+} -result 1
+
+test log-json-1.2 {_to_json handles numbers} -body {
+    set output [::mcp::log::_to_json [dict create count 42 rate 3.14]]
+    # Numbers should not be quoted
+    expr {[string first "\"42\"" $output] < 0 && [string first ":42" $output] > 0}
+} -result 1
+
+test log-escape-1.3 {newline is escaped in JSON} -body {
+    set json [::mcp::log::_escape_string "line1\nline2"]
+    # After escaping, should contain backslash followed by n
+    expr {[string first "\\n" $json] >= 0}
+} -result 1
+
+test log-escape-1.4 {quotes are escaped in JSON} -body {
+    set json [::mcp::log::_escape_string "say \"hello\""]
+    # Should contain backslash-quote
+    expr {[string first "\\\"" $json] >= 0}
+} -result 1
+
+test log-escape-1.5 {backslashes are escaped} -body {
+    set json [::mcp::log::_escape_string "c:\\windows"]
+    # Should contain doubled backslash
+    expr {[string first "\\\\" $json] >= 0}
+} -result 1
+
+test log-level-2.0 {init accepts level names} -body {
+    ::mcp::log::init ERROR
+    set ::mcp::log::current_level
+} -result 3
+
+test log-level-2.1 {init accepts numeric levels} -body {
+    ::mcp::log::init 7
+    set ::mcp::log::current_level
+} -result 7
+
+test log-level-2.2 {log level filtering works} -setup {
+    set chan [null_channel]
+    ::mcp::log::init ERROR $chan
+} -body {
+    # DEBUG should be suppressed at ERROR level
+    set result [::mcp::log::emit DEBUG "test message" {}]
+    expr {$result eq ""}
+} -cleanup {
+    close $chan
+    ::mcp::log::init INFO stdout
+} -result 1
+
+test log-level-2.3 {ERROR logs at ERROR level} -setup {
+    set chan [null_channel]
+    ::mcp::log::init ERROR $chan
+} -body {
+    set result [::mcp::log::emit ERROR "error message" {}]
+    expr {$result ne ""}
+} -cleanup {
+    close $chan
+    ::mcp::log::init INFO stdout
+} -result 1
+
+test log-level-2.4 {INFO logs at INFO level} -setup {
+    set chan [null_channel]
+    ::mcp::log::init INFO $chan
+} -body {
+    set result [::mcp::log::emit INFO "info message" {}]
+    expr {$result ne ""}
+} -cleanup {
+    close $chan
+    ::mcp::log::init INFO stdout
+} -result 1
+
+test log-level-2.5 {DEBUG suppressed at INFO level} -setup {
+    set chan [null_channel]
+    ::mcp::log::init INFO $chan
+} -body {
+    set result [::mcp::log::emit DEBUG "debug message" {}]
+    expr {$result eq ""}
+} -cleanup {
+    close $chan
+    ::mcp::log::init INFO stdout
+} -result 1
+
+test log-wrapper-3.0 {error wrapper works} -setup {
+    set chan [null_channel]
+    ::mcp::log::init ERROR $chan
+} -body {
+    set result [::mcp::log::error "test error"]
+    expr {[string first "ERROR" $result] > 0}
+} -cleanup {
+    close $chan
+    ::mcp::log::init INFO stdout
+} -result 1
+
+test log-wrapper-3.1 {warn wrapper works} -setup {
+    set chan [null_channel]
+    ::mcp::log::init WARN $chan
+} -body {
+    set result [::mcp::log::warn "test warning"]
+    expr {[string first "WARN" $result] > 0}
+} -cleanup {
+    close $chan
+    ::mcp::log::init INFO stdout
+} -result 1
+
+test log-wrapper-3.2 {info wrapper works} -setup {
+    set chan [null_channel]
+    ::mcp::log::init INFO $chan
+} -body {
+    set result [::mcp::log::info "test info"]
+    expr {[string first "INFO" $result] > 0}
+} -cleanup {
+    close $chan
+    ::mcp::log::init INFO stdout
+} -result 1
+
+test log-wrapper-3.3 {debug wrapper works} -setup {
+    set chan [null_channel]
+    ::mcp::log::init DEBUG $chan
+} -body {
+    set result [::mcp::log::debug "test debug"]
+    expr {[string first "DEBUG" $result] > 0}
+} -cleanup {
+    close $chan
+    ::mcp::log::init INFO stdout
+} -result 1
+
+test log-data-4.0 {additional data is included} -setup {
+    set chan [null_channel]
+    ::mcp::log::init INFO $chan
+} -body {
+    set result [::mcp::log::info "test" [dict create host "localhost" port 22]]
+    expr {[string first "localhost" $result] > 0 && [string first "22" $result] > 0}
+} -cleanup {
+    close $chan
+    ::mcp::log::init INFO stdout
+} -result 1
+
+test log-timestamp-5.0 {timestamp is included} -setup {
+    set chan [null_channel]
+    ::mcp::log::init INFO $chan
+} -body {
+    set result [::mcp::log::info "test"]
+    regexp {"timestamp":"[0-9]{4}-[0-9]{2}-[0-9]{2}T} $result
+} -cleanup {
+    close $chan
+    ::mcp::log::init INFO stdout
+} -result 1
+
+cleanupTests

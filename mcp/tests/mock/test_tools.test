@@ -1,0 +1,332 @@
+#!/usr/bin/env tclsh
+# test_tools.test - Tests for mcp::tools module
+#
+# These tests focus on validation logic and error handling.
+# Tests requiring actual SSH connections are skipped in mock tests.
+
+package require tcltest
+namespace import ::tcltest::*
+
+# Source dependencies
+set script_dir [file dirname [info script]]
+source [file join $script_dir "../../lib/util.tcl"]
+source [file join $script_dir "../../lib/log.tcl"]
+source [file join $script_dir "../../lib/metrics.tcl"]
+source [file join $script_dir "../../lib/security.tcl"]
+source [file join $script_dir "../../lib/session.tcl"]
+source [file join $script_dir "../../lib/mcp_session.tcl"]
+source [file join $script_dir "../../lib/pool.tcl"]
+source [file join $script_dir "../../lib/jsonrpc.tcl"]
+source [file join $script_dir "../../lib/tools.tcl"]
+
+# Suppress log output in tests
+::mcp::log::init ERROR [open /dev/null w]
+
+# Reset state
+proc setup_tools {} {
+    ::mcp::session::reset
+    ::mcp::mcp_session::reset
+    ::mcp::pool::reset
+    ::mcp::metrics::reset
+    ::mcp::security::reset_rate_limits
+}
+
+#===========================================================================
+# TOOL DEFINITIONS TESTS
+#===========================================================================
+
+test tools-def-1.0 {tool_definitions is populated} -body {
+    expr {[llength $::mcp::tools::tool_definitions] > 0}
+} -result 1
+
+test tools-def-1.1 {ssh_connect definition exists} -body {
+    set found 0
+    foreach def $::mcp::tools::tool_definitions {
+        if {[dict get $def name] eq "ssh_connect"} {
+            set found 1
+            break
+        }
+    }
+    set found
+} -result 1
+
+test tools-def-1.2 {all definitions have required fields} -body {
+    set valid 1
+    foreach def $::mcp::tools::tool_definitions {
+        if {![dict exists $def name] || ![dict exists $def description] || ![dict exists $def inputSchema]} {
+            set valid 0
+            break
+        }
+    }
+    set valid
+} -result 1
+
+#===========================================================================
+# DISPATCH TESTS
+#===========================================================================
+
+test tools-dispatch-2.0 {dispatch unknown tool returns error} -setup {
+    setup_tools
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+} -body {
+    catch {::mcp::tools::dispatch "unknown_tool" {} $mid} err
+    dict get $err code
+} -result -32601
+
+#===========================================================================
+# SSH_CONNECT VALIDATION TESTS
+#===========================================================================
+
+test tools-connect-3.0 {ssh_connect requires host} -setup {
+    setup_tools
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+} -body {
+    set result [::mcp::tools::tool_ssh_connect [dict create password "test"] $mid]
+    dict get $result isError
+} -result true
+
+test tools-connect-3.1 {ssh_connect requires password} -setup {
+    setup_tools
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+} -body {
+    set result [::mcp::tools::tool_ssh_connect [dict create host "localhost"] $mid]
+    dict get $result isError
+} -result true
+
+test tools-connect-3.2 {ssh_connect error message mentions host} -setup {
+    setup_tools
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+} -body {
+    set result [::mcp::tools::tool_ssh_connect [dict create password "test"] $mid]
+    set content [lindex [dict get $result content] 0]
+    expr {[string first "host" [dict get $content text]] >= 0}
+} -result 1
+
+#===========================================================================
+# SSH_DISCONNECT VALIDATION TESTS
+#===========================================================================
+
+test tools-disconnect-4.0 {ssh_disconnect requires session_id} -setup {
+    setup_tools
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+} -body {
+    set result [::mcp::tools::tool_ssh_disconnect {} $mid]
+    dict get $result isError
+} -result true
+
+test tools-disconnect-4.1 {ssh_disconnect rejects invalid session} -setup {
+    setup_tools
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+} -body {
+    set result [::mcp::tools::tool_ssh_disconnect [dict create session_id "invalid_session"] $mid]
+    dict get $result isError
+} -result true
+
+#===========================================================================
+# SSH_RUN_COMMAND VALIDATION TESTS
+#===========================================================================
+
+test tools-run-5.0 {ssh_run_command requires session_id} -setup {
+    setup_tools
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+} -body {
+    set result [::mcp::tools::tool_ssh_run_command [dict create command "ls"] $mid]
+    dict get $result isError
+} -result true
+
+test tools-run-5.1 {ssh_run_command requires command} -setup {
+    setup_tools
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+} -body {
+    set result [::mcp::tools::tool_ssh_run_command [dict create session_id "test"] $mid]
+    dict get $result isError
+} -result true
+
+test tools-run-5.2 {ssh_run_command rejects invalid session} -setup {
+    setup_tools
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+} -body {
+    set result [::mcp::tools::tool_ssh_run_command \
+        [dict create session_id "invalid" command "ls"] $mid]
+    dict get $result isError
+} -result true
+
+test tools-run-5.3 {ssh_run_command validates command security} -setup {
+    setup_tools
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+    # Create a mock session
+    set sid [::mcp::session::create "mock_spawn" "localhost" "user" $mid]
+    ::mcp::mcp_session::add_ssh_session $mid $sid
+} -body {
+    # This should fail security validation
+    set result [::mcp::tools::tool_ssh_run_command \
+        [dict create session_id $sid command "rm -rf /"] $mid]
+    dict get $result isError
+} -result true
+
+test tools-run-5.4 {ssh_run_command blocks pipe commands} -setup {
+    setup_tools
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+    set sid [::mcp::session::create "mock_spawn" "localhost" "user" $mid]
+    ::mcp::mcp_session::add_ssh_session $mid $sid
+} -body {
+    set result [::mcp::tools::tool_ssh_run_command \
+        [dict create session_id $sid command "ls | sh"] $mid]
+    dict get $result isError
+} -result true
+
+test tools-run-5.5 {ssh_run_command blocks command substitution} -setup {
+    setup_tools
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+    set sid [::mcp::session::create "mock_spawn" "localhost" "user" $mid]
+    ::mcp::mcp_session::add_ssh_session $mid $sid
+} -body {
+    set result [::mcp::tools::tool_ssh_run_command \
+        [dict create session_id $sid command {echo $(id)}] $mid]
+    dict get $result isError
+} -result true
+
+#===========================================================================
+# SSH_CAT_FILE VALIDATION TESTS
+#===========================================================================
+
+test tools-cat-6.0 {ssh_cat_file requires session_id} -setup {
+    setup_tools
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+} -body {
+    set result [::mcp::tools::tool_ssh_cat_file [dict create path "/etc/hostname"] $mid]
+    dict get $result isError
+} -result true
+
+test tools-cat-6.1 {ssh_cat_file requires path} -setup {
+    setup_tools
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+} -body {
+    set result [::mcp::tools::tool_ssh_cat_file [dict create session_id "test"] $mid]
+    dict get $result isError
+} -result true
+
+test tools-cat-6.2 {ssh_cat_file validates path security} -setup {
+    setup_tools
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+    set sid [::mcp::session::create "mock_spawn" "localhost" "user" $mid]
+    ::mcp::mcp_session::add_ssh_session $mid $sid
+} -body {
+    # Try to read shadow file - should be blocked
+    set result [::mcp::tools::tool_ssh_cat_file \
+        [dict create session_id $sid path "/etc/shadow"] $mid]
+    dict get $result isError
+} -result true
+
+test tools-cat-6.3 {ssh_cat_file blocks path traversal} -setup {
+    setup_tools
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+    set sid [::mcp::session::create "mock_spawn" "localhost" "user" $mid]
+    ::mcp::mcp_session::add_ssh_session $mid $sid
+} -body {
+    set result [::mcp::tools::tool_ssh_cat_file \
+        [dict create session_id $sid path "/tmp/../etc/shadow"] $mid]
+    dict get $result isError
+} -result true
+
+#===========================================================================
+# SSH_HOSTNAME VALIDATION TESTS
+#===========================================================================
+
+test tools-hostname-7.0 {ssh_hostname requires session_id} -setup {
+    setup_tools
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+} -body {
+    set result [::mcp::tools::tool_ssh_hostname {} $mid]
+    dict get $result isError
+} -result true
+
+#===========================================================================
+# SSH_LIST_SESSIONS TESTS
+#===========================================================================
+
+test tools-list-8.0 {ssh_list_sessions returns empty for no sessions} -setup {
+    setup_tools
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+} -body {
+    set result [::mcp::tools::tool_ssh_list_sessions {} $mid]
+    dict get $result count
+} -result 0
+
+test tools-list-8.1 {ssh_list_sessions counts sessions} -setup {
+    setup_tools
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+    set sid1 [::mcp::session::create "spawn1" "host1" "user1" $mid]
+    set sid2 [::mcp::session::create "spawn2" "host2" "user2" $mid]
+    ::mcp::mcp_session::add_ssh_session $mid $sid1
+    ::mcp::mcp_session::add_ssh_session $mid $sid2
+} -body {
+    set result [::mcp::tools::tool_ssh_list_sessions {} $mid]
+    dict get $result count
+} -result 2
+
+#===========================================================================
+# SSH_POOL_STATS TESTS
+#===========================================================================
+
+test tools-pool-9.0 {ssh_pool_stats returns stats} -setup {
+    setup_tools
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+} -body {
+    set result [::mcp::tools::tool_ssh_pool_stats {} $mid]
+    dict exists $result stats
+} -result 1
+
+#===========================================================================
+# SESSION OWNERSHIP TESTS
+#===========================================================================
+
+test tools-owner-10.0 {_verify_session_owner returns false for invalid session} -setup {
+    setup_tools
+} -body {
+    ::mcp::tools::_verify_session_owner "invalid" "mcp_test"
+} -result 0
+
+test tools-owner-10.1 {_verify_session_owner returns false for wrong owner} -setup {
+    setup_tools
+    set mid1 [::mcp::mcp_session::create {name test1 version 1.0}]
+    set mid2 [::mcp::mcp_session::create {name test2 version 1.0}]
+    set sid [::mcp::session::create "spawn1" "host1" "user1" $mid1]
+} -body {
+    # Session belongs to mid1, not mid2
+    ::mcp::tools::_verify_session_owner $sid $mid2
+} -result 0
+
+test tools-owner-10.2 {_verify_session_owner returns true for correct owner} -setup {
+    setup_tools
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+    set sid [::mcp::session::create "spawn1" "host1" "user1" $mid]
+} -body {
+    ::mcp::tools::_verify_session_owner $sid $mid
+} -result 1
+
+#===========================================================================
+# BINARY DETECTION TESTS
+#===========================================================================
+
+test tools-binary-11.0 {_is_binary detects null bytes} -body {
+    ::mcp::tools::_is_binary "hello\x00world"
+} -result 1
+
+test tools-binary-11.1 {_is_binary allows text} -body {
+    ::mcp::tools::_is_binary "hello world\n"
+} -result 0
+
+test tools-binary-11.2 {_is_binary detects high ratio of non-printables} -body {
+    set data ""
+    for {set i 0} {$i < 50} {incr i} {
+        append data "\x01"
+    }
+    ::mcp::tools::_is_binary $data
+} -result 1
+
+test tools-binary-11.3 {_is_binary allows empty string} -body {
+    ::mcp::tools::_is_binary ""
+} -result 0
+
+cleanupTests

@@ -1,0 +1,323 @@
+#!/usr/bin/env tclsh
+# test_http.test - Tests for mcp::http module
+#
+# These tests focus on request parsing and response generation.
+# Full HTTP server tests require integration testing.
+
+package require tcltest
+namespace import ::tcltest::*
+
+# Source dependencies
+set script_dir [file dirname [info script]]
+source [file join $script_dir "../../lib/util.tcl"]
+source [file join $script_dir "../../lib/log.tcl"]
+source [file join $script_dir "../../lib/metrics.tcl"]
+source [file join $script_dir "../../lib/security.tcl"]
+source [file join $script_dir "../../lib/session.tcl"]
+source [file join $script_dir "../../lib/mcp_session.tcl"]
+source [file join $script_dir "../../lib/pool.tcl"]
+source [file join $script_dir "../../lib/jsonrpc.tcl"]
+source [file join $script_dir "../../lib/router.tcl"]
+source [file join $script_dir "../../lib/tools.tcl"]
+source [file join $script_dir "../../lib/http.tcl"]
+
+# Suppress log output in tests
+::mcp::log::init ERROR [open /dev/null w]
+
+# Initialize router
+::mcp::router::init
+
+# Reset state
+proc setup_http {} {
+    ::mcp::session::reset
+    ::mcp::mcp_session::reset
+    ::mcp::metrics::reset
+    ::mcp::security::reset_rate_limits
+}
+
+#===========================================================================
+# REQUEST PARSING TESTS
+#===========================================================================
+
+test http-parse-1.0 {parse GET request} -body {
+    set request "GET /health HTTP/1.1\r
+Host: localhost\r
+\r
+"
+    set parsed [::mcp::http::_parse_request $request]
+    dict get $parsed method
+} -result "GET"
+
+test http-parse-1.1 {parse POST request} -body {
+    set request "POST / HTTP/1.1\r
+Host: localhost\r
+Content-Type: application/json\r
+\r
+{}"
+    set parsed [::mcp::http::_parse_request $request]
+    dict get $parsed method
+} -result "POST"
+
+test http-parse-1.2 {parse request path} -body {
+    set request "GET /metrics HTTP/1.1\r
+Host: localhost\r
+\r
+"
+    set parsed [::mcp::http::_parse_request $request]
+    dict get $parsed path
+} -result "/metrics"
+
+test http-parse-1.3 {parse request headers} -body {
+    set request "GET / HTTP/1.1\r
+Host: localhost\r
+Mcp-Session-Id: abc123\r
+\r
+"
+    set parsed [::mcp::http::_parse_request $request]
+    set headers [dict get $parsed headers]
+    dict get $headers "mcp-session-id"
+} -result "abc123"
+
+test http-parse-1.4 {parse request body} -body {
+    set body {{"jsonrpc":"2.0","id":1,"method":"test"}}
+    set request "POST / HTTP/1.1\r
+Host: localhost\r
+Content-Length: [string length $body]\r
+\r
+$body"
+    set parsed [::mcp::http::_parse_request $request]
+    dict get $parsed body
+} -match glob -result *jsonrpc*
+
+test http-parse-1.5 {parse HTTP version} -body {
+    set request "GET / HTTP/1.1\r
+Host: localhost\r
+\r
+"
+    set parsed [::mcp::http::_parse_request $request]
+    dict get $parsed version
+} -result "1.1"
+
+test http-parse-1.6 {parse invalid request returns empty} -body {
+    set request "INVALID REQUEST"
+    set parsed [::mcp::http::_parse_request $request]
+    expr {$parsed eq ""}
+} -result 1
+
+#===========================================================================
+# RESPONSE GENERATION TESTS
+#===========================================================================
+
+test http-response-2.0 {_make_response creates response dict} -body {
+    set response [::mcp::http::_make_response 200 "OK" "text/plain" "hello"]
+    dict get $response status
+} -result 200
+
+test http-response-2.1 {_make_response includes body} -body {
+    set response [::mcp::http::_make_response 200 "OK" "text/plain" "hello world"]
+    dict get $response body
+} -result "hello world"
+
+test http-response-2.2 {_make_response includes content type} -body {
+    set response [::mcp::http::_make_response 200 "OK" "application/json" "{}"]
+    dict get $response content_type
+} -result "application/json"
+
+test http-response-2.3 {_make_response includes extra headers} -body {
+    set response [::mcp::http::_make_response 200 "OK" "text/plain" "ok" \
+        [list "X-Custom" "value"]]
+    dict get $response extra_headers
+} -result {X-Custom value}
+
+#===========================================================================
+# HEALTH ENDPOINT TESTS
+#===========================================================================
+
+test http-health-3.0 {health endpoint returns status ok} -setup {
+    setup_http
+} -body {
+    set request [dict create method "GET" path "/health" headers {} body ""]
+    set response [::mcp::http::_handle_health $request]
+    set body [dict get $response body]
+    expr {[string first "ok" $body] >= 0}
+} -result 1
+
+test http-health-3.1 {health endpoint returns 200} -setup {
+    setup_http
+} -body {
+    set request [dict create method "GET" path "/health" headers {} body ""]
+    set response [::mcp::http::_handle_health $request]
+    dict get $response status
+} -result 200
+
+test http-health-3.2 {health endpoint includes session count} -setup {
+    setup_http
+} -body {
+    set request [dict create method "GET" path "/health" headers {} body ""]
+    set response [::mcp::http::_handle_health $request]
+    set body [dict get $response body]
+    expr {[string first "sessions" $body] >= 0}
+} -result 1
+
+#===========================================================================
+# METRICS ENDPOINT TESTS
+#===========================================================================
+
+test http-metrics-4.0 {metrics endpoint returns 200} -setup {
+    setup_http
+} -body {
+    set request [dict create method "GET" path "/metrics" headers {} body ""]
+    set response [::mcp::http::_handle_metrics $request]
+    dict get $response status
+} -result 200
+
+test http-metrics-4.1 {metrics endpoint returns text/plain} -setup {
+    setup_http
+} -body {
+    set request [dict create method "GET" path "/metrics" headers {} body ""]
+    set response [::mcp::http::_handle_metrics $request]
+    string match "*text/plain*" [dict get $response content_type]
+} -result 1
+
+#===========================================================================
+# JSON-RPC ENDPOINT TESTS
+#===========================================================================
+
+test http-jsonrpc-5.0 {jsonrpc endpoint handles initialize} -setup {
+    setup_http
+} -body {
+    set body {{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}}
+    set request [dict create \
+        method "POST" \
+        path "/" \
+        headers [dict create content-type "application/json"] \
+        body $body \
+    ]
+    set response [::mcp::http::_handle_jsonrpc $request "127.0.0.1"]
+    dict get $response status
+} -result 200
+
+test http-jsonrpc-5.1 {jsonrpc endpoint returns session header} -setup {
+    setup_http
+} -body {
+    set body {{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}}
+    set request [dict create \
+        method "POST" \
+        path "/" \
+        headers [dict create content-type "application/json"] \
+        body $body \
+    ]
+    set response [::mcp::http::_handle_jsonrpc $request "127.0.0.1"]
+    set extra [dict get $response extra_headers]
+    expr {"Mcp-Session-Id" in $extra}
+} -result 1
+
+test http-jsonrpc-5.2 {jsonrpc endpoint handles parse error} -setup {
+    setup_http
+} -body {
+    set request [dict create \
+        method "POST" \
+        path "/" \
+        headers [dict create content-type "application/json"] \
+        body "not valid json" \
+    ]
+    set response [::mcp::http::_handle_jsonrpc $request "127.0.0.1"]
+    set body [dict get $response body]
+    expr {[string first "-32700" $body] >= 0}
+} -result 1
+
+test http-jsonrpc-5.3 {jsonrpc endpoint handles tools/list} -setup {
+    setup_http
+} -body {
+    set body {{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}}
+    set request [dict create \
+        method "POST" \
+        path "/" \
+        headers [dict create content-type "application/json"] \
+        body $body \
+    ]
+    set response [::mcp::http::_handle_jsonrpc $request "127.0.0.1"]
+    set result_body [dict get $response body]
+    expr {[string first "tools" $result_body] >= 0}
+} -result 1
+
+test http-jsonrpc-5.4 {jsonrpc endpoint reuses session} -setup {
+    setup_http
+    # Create a session first
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+} -body {
+    set body {{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}}
+    set request [dict create \
+        method "POST" \
+        path "/" \
+        headers [dict create content-type "application/json" mcp-session-id $mid] \
+        body $body \
+    ]
+    set response [::mcp::http::_handle_jsonrpc $request "127.0.0.1"]
+    set extra [dict get $response extra_headers]
+    # Should return the same session ID
+    set returned_id [lindex $extra 1]
+    expr {$returned_id eq $mid}
+} -result 1
+
+#===========================================================================
+# DISPATCH TESTS
+#===========================================================================
+
+test http-dispatch-6.0 {dispatch routes to health} -setup {
+    setup_http
+} -body {
+    set request [dict create method "GET" path "/health" headers {} body ""]
+    set response [::mcp::http::_dispatch $request "127.0.0.1"]
+    dict get $response status
+} -result 200
+
+test http-dispatch-6.1 {dispatch routes to metrics} -setup {
+    setup_http
+} -body {
+    set request [dict create method "GET" path "/metrics" headers {} body ""]
+    set response [::mcp::http::_dispatch $request "127.0.0.1"]
+    dict get $response status
+} -result 200
+
+test http-dispatch-6.2 {dispatch returns 404 for unknown path} -setup {
+    setup_http
+} -body {
+    set request [dict create method "GET" path "/unknown" headers {} body ""]
+    set response [::mcp::http::_dispatch $request "127.0.0.1"]
+    dict get $response status
+} -result 404
+
+test http-dispatch-6.3 {dispatch returns 405 for GET on root} -setup {
+    setup_http
+} -body {
+    set request [dict create method "GET" path "/" headers {} body ""]
+    set response [::mcp::http::_dispatch $request "127.0.0.1"]
+    dict get $response status
+} -result 405
+
+test http-dispatch-6.4 {dispatch routes POST to jsonrpc} -setup {
+    setup_http
+} -body {
+    set body {{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}}
+    set request [dict create \
+        method "POST" \
+        path "/" \
+        headers [dict create content-type "application/json"] \
+        body $body \
+    ]
+    set response [::mcp::http::_dispatch $request "127.0.0.1"]
+    dict get $response status
+} -result 200
+
+#===========================================================================
+# SERVER STATE TESTS
+#===========================================================================
+
+test http-state-7.0 {is_running returns false initially} -body {
+    # Don't start server in tests
+    set ::mcp::http::running 0
+    ::mcp::http::is_running
+} -result 0
+
+cleanupTests
