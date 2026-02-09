@@ -1,0 +1,220 @@
+#!/usr/bin/env expect
+#
+# ssh-automation - SSH automation driver
+#
+# Usage: ssh-automation --host <hostname> --filename <file> [--user <username>] [--debug <0-7>] [--insecure]
+#
+# Arguments:
+#   --host      Required. Hostname or IP address
+#   --filename  Required. File to cat on remote host
+#   --user      Optional. SSH username (defaults to $USER)
+#   --debug     Optional. Debug level 0-7 (default: 0)
+#   --insecure  Optional. Skip host key verification
+#
+# Environment Variables:
+#   PASSWORD   User SSH password (prompts if not set)
+#   SUDO       Sudo/root password (prompts if not set)
+#   INSECURE   Set to 1 to skip host key verification
+
+# Get script directory and set up library path
+set script_dir [file dirname [file normalize [info script]]]
+set lib_dir [file join $script_dir "../lib"]
+
+# Source all library modules
+source [file join $lib_dir "common/debug.tcl"]
+source [file join $lib_dir "common/utils.tcl"]
+source [file join $lib_dir "common/prompt.tcl"]
+source [file join $lib_dir "auth/password.tcl"]
+source [file join $lib_dir "auth/sudo.tcl"]
+source [file join $lib_dir "connection/ssh.tcl"]
+source [file join $lib_dir "commands/sudo_exec.tcl"]
+source [file join $lib_dir "commands/hostname.tcl"]
+source [file join $lib_dir "commands/cat_file.tcl"]
+
+# Parse command line arguments
+proc parse_args {argv} {
+    set options [dict create \
+        host "" \
+        filename "" \
+        user "" \
+        debug 0 \
+        insecure 0 \
+    ]
+
+    # Get default user from environment
+    if {[info exists ::env(USER)]} {
+        dict set options user $::env(USER)
+    }
+
+    set argc [llength $argv]
+    for {set i 0} {$i < $argc} {incr i} {
+        set arg [lindex $argv $i]
+        switch -glob -- $arg {
+            "--host" {
+                incr i
+                if {$i >= $argc} {
+                    puts stderr "Error: --host requires an argument"
+                    exit 1
+                }
+                dict set options host [lindex $argv $i]
+            }
+            "--filename" {
+                incr i
+                if {$i >= $argc} {
+                    puts stderr "Error: --filename requires an argument"
+                    exit 1
+                }
+                dict set options filename [lindex $argv $i]
+            }
+            "--user" {
+                incr i
+                if {$i >= $argc} {
+                    puts stderr "Error: --user requires an argument"
+                    exit 1
+                }
+                dict set options user [lindex $argv $i]
+            }
+            "--debug" {
+                incr i
+                if {$i >= $argc} {
+                    puts stderr "Error: --debug requires an argument"
+                    exit 1
+                }
+                dict set options debug [lindex $argv $i]
+            }
+            "--insecure" {
+                dict set options insecure 1
+            }
+            "--help" - "-h" {
+                print_usage
+                exit 0
+            }
+            default {
+                puts stderr "Error: Unknown argument: $arg"
+                print_usage
+                exit 1
+            }
+        }
+    }
+
+    return $options
+}
+
+proc print_usage {} {
+    puts stderr "Usage: ssh-automation --host <hostname> --filename <file> \[options\]"
+    puts stderr ""
+    puts stderr "Required arguments:"
+    puts stderr "  --host <hostname>    Hostname or IP address"
+    puts stderr "  --filename <file>    File to cat on remote host"
+    puts stderr ""
+    puts stderr "Optional arguments:"
+    puts stderr "  --user <username>    SSH username (default: \$USER)"
+    puts stderr "  --debug <0-7>        Debug level (default: 0)"
+    puts stderr "  --insecure           Skip host key verification"
+    puts stderr "  --help, -h           Show this help message"
+    puts stderr ""
+    puts stderr "Environment variables:"
+    puts stderr "  PASSWORD             User SSH password (prompts if not set)"
+    puts stderr "  SUDO                 Sudo/root password (prompts if not set)"
+    puts stderr "  INSECURE             Set to 1 to skip host key verification"
+}
+
+proc validate_options {options} {
+    if {[dict get $options host] eq ""} {
+        puts stderr "Error: --host is required"
+        print_usage
+        exit 1
+    }
+    if {[dict get $options filename] eq ""} {
+        puts stderr "Error: --filename is required"
+        print_usage
+        exit 1
+    }
+    if {[dict get $options user] eq ""} {
+        puts stderr "Error: --user is required (or set \$USER environment variable)"
+        print_usage
+        exit 1
+    }
+}
+
+# Main procedure
+proc main {argv} {
+    # Parse arguments
+    set options [parse_args $argv]
+    validate_options $options
+
+    set host [dict get $options host]
+    set filename [dict get $options filename]
+    set user [dict get $options user]
+    set debug_level [dict get $options debug]
+    set insecure [dict get $options insecure]
+
+    # Initialize debug
+    debug::init $debug_level
+
+    debug::log 3 "Starting ssh-automation"
+    debug::log 4 "Host: $host, User: $user, File: $filename"
+
+    # Get passwords
+    set ssh_password [auth::password::get]
+    set sudo_password [auth::sudo::get]
+
+    # Connect to host
+    debug::log 3 "Connecting to $user@$host"
+    set spawn_id [connection::ssh::connect $host $user $ssh_password $insecure]
+
+    if {$spawn_id eq ""} {
+        puts stderr "Error: Failed to connect to $host"
+        exit 1
+    }
+
+    debug::log 3 "Connected successfully"
+
+    # Sudo to root
+    debug::log 3 "Elevating to root"
+    if {![commands::sudo::exec $spawn_id $sudo_password]} {
+        puts stderr "Error: Failed to sudo to root"
+        connection::ssh::disconnect $spawn_id
+        exit 1
+    }
+
+    debug::log 3 "Elevated to root successfully"
+
+    # Get hostname
+    set remote_hostname [commands::hostname::get $spawn_id]
+    if {$remote_hostname ne ""} {
+        puts "Hostname: $remote_hostname"
+    } else {
+        puts stderr "Warning: Could not retrieve hostname"
+    }
+
+    # Cat the file
+    debug::log 3 "Reading file: $filename"
+    set file_contents [commands::cat_file::read $spawn_id $filename]
+
+    if {$file_contents eq ""} {
+        puts stderr "Error: Could not read file $filename"
+        connection::ssh::disconnect $spawn_id
+        exit 1
+    }
+
+    puts ""
+    puts "=== Contents of $filename ==="
+    puts $file_contents
+    puts "=== End of file ==="
+
+    # Disconnect
+    debug::log 3 "Disconnecting"
+    connection::ssh::disconnect $spawn_id
+
+    debug::log 3 "Done"
+
+    # Clear passwords from memory
+    auth::password::clear
+    auth::sudo::clear
+
+    exit 0
+}
+
+# Run main
+main $argv
