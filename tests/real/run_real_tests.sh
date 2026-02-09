@@ -1,25 +1,41 @@
 #!/bin/bash
-# run_all_tests.sh - Master test runner
+# run_real_tests.sh - Run tests against real SSH host
 #
-# Runs all component tests in sequence
-
-set -e
+# Requires:
+#   - SSH_HOST environment variable (or defaults to 192.168.122.163)
+#   - SSH_USER environment variable (or defaults to das)
+#   - PASSWORD environment variable (SSH password)
+#   - SUDO environment variable (optional, for sudo tests)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR/mock" || exit 1
+
+cd "$SCRIPT_DIR" || exit 1
+
+# Default test host
+: "${SSH_HOST:=192.168.122.163}"
+: "${SSH_USER:=das}"
+
+export SSH_HOST SSH_USER
+
+# Check prerequisites
+if [[ -z "$PASSWORD" ]]; then
+    echo "ERROR: PASSWORD environment variable is required"
+    echo "Usage: PASSWORD=<password> $0"
+    exit 1
+fi
+
+# Check if host is reachable
+if ! ping -c 1 -W 2 "$SSH_HOST" > /dev/null 2>&1; then
+    echo "ERROR: Host $SSH_HOST is not reachable"
+    exit 1
+fi
 
 TESTS=(
-    "test_debug.sh"
-    "test_prompt.sh"
-    "test_password.sh"
-    "test_sudo.sh"
-    "test_ssh.sh"
-    "test_sudo_exec.sh"
+    "test_ssh_connect.sh"
+    "test_prompt_init.sh"
+    "test_run_commands.sh"
     "test_hostname.sh"
     "test_cat_file.sh"
-    "test_escape_sequences.sh"
-    "test_timeouts.sh"
-    "test_edge_cases.sh"
 )
 
 PASS=0
@@ -27,8 +43,10 @@ FAIL=0
 FAILED_TESTS=()
 
 echo "========================================"
-echo "SSH Automation Mock Test Suite"
+echo "SSH Automation Real Tests"
 echo "========================================"
+echo "Host: $SSH_HOST"
+echo "User: $SSH_USER"
 echo ""
 
 for test in "${TESTS[@]}"; do
@@ -39,11 +57,11 @@ for test in "${TESTS[@]}"; do
     if ./"$test"; then
         echo ""
         echo "PASSED: $test"
-        ((PASS++))
+        PASS=$((PASS + 1))
     else
         echo ""
         echo "FAILED: $test"
-        ((FAIL++))
+        FAIL=$((FAIL + 1))
         FAILED_TESTS+=("$test")
     fi
     echo ""

@@ -158,33 +158,34 @@ namespace eval connection::ssh {
             return 0
         }
 
-        # Get the exact prompt patterns from prompt module
-        set user_pattern $::prompt::user_pattern
-        set root_pattern $::prompt::root_pattern
+        # Get prompt marker for regex match
+        set mypid $::prompt::mypid
+        set result 0
 
         # Try to check if process is still running
         if {[catch {
             # Send an empty line and wait for prompt
             send -i $spawn_id "\r"
+            # Use regex match that can find prompt marker anywhere in output
             expect -i $spawn_id -timeout 5 \
-                -ex $user_pattern {
-                    return 1
+                -re "XPCT${mypid}> " {
+                    set result 1
                 } \
-                -ex $root_pattern {
-                    return 1
+                -re "XPCT${mypid}# " {
+                    set result 1
                 } \
                 timeout {
-                    return 0
+                    set result 0
                 } \
                 eof {
                     dict set connections $spawn_id connected 0
-                    return 0
+                    set result 0
                 }
         } err]} {
             dict set connections $spawn_id connected 0
             return 0
         }
 
-        return 1
+        return $result
     }
 }
