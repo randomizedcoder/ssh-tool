@@ -1,0 +1,299 @@
+#!/usr/bin/env tclsh
+# test_session.test - Tests for mcp::session and mcp::mcp_session modules
+
+package require tcltest
+namespace import ::tcltest::*
+
+# Source dependencies
+set script_dir [file dirname [info script]]
+source [file join $script_dir "../../lib/util.tcl"]
+source [file join $script_dir "../../lib/log.tcl"]
+source [file join $script_dir "../../lib/session.tcl"]
+source [file join $script_dir "../../lib/mcp_session.tcl"]
+
+# Suppress log output in tests
+::mcp::log::init ERROR [open /dev/null w]
+
+#===========================================================================
+# SSH SESSION TESTS
+#===========================================================================
+
+test session-create-1.0 {create session returns ID} -setup {
+    ::mcp::session::reset
+} -body {
+    set sid [::mcp::session::create "spawn1" "host1" "user1" "mcp_test"]
+    regexp {^sess_[0-9a-f]+$} $sid
+} -result 1
+
+test session-create-1.1 {create session stores data} -setup {
+    ::mcp::session::reset
+} -body {
+    set sid [::mcp::session::create "spawn2" "host2" "user2" "mcp_test"]
+    set data [::mcp::session::get $sid]
+    dict get $data host
+} -result "host2"
+
+test session-create-1.2 {create session sets initial fields} -setup {
+    ::mcp::session::reset
+} -body {
+    set sid [::mcp::session::create "spawn3" "host3" "user3" "mcp_test"]
+    set data [::mcp::session::get $sid]
+    expr {
+        [dict get $data spawn_id] eq "spawn3" &&
+        [dict get $data user] eq "user3" &&
+        [dict get $data is_root] == 0 &&
+        [dict get $data in_use] == 0 &&
+        [dict get $data mcp_session] eq "mcp_test"
+    }
+} -result 1
+
+test session-get-2.0 {get returns empty for invalid session} -setup {
+    ::mcp::session::reset
+} -body {
+    ::mcp::session::get "invalid_session_id"
+} -result {}
+
+test session-update-3.0 {update modifies session} -setup {
+    ::mcp::session::reset
+} -body {
+    set sid [::mcp::session::create "spawn4" "host4" "user4" "mcp_test"]
+    ::mcp::session::update $sid [dict create is_root 1]
+    set data [::mcp::session::get $sid]
+    dict get $data is_root
+} -result 1
+
+test session-update-3.1 {update throws on invalid session} -setup {
+    ::mcp::session::reset
+} -body {
+    ::mcp::session::update "invalid" [dict create foo bar]
+} -returnCodes error -match glob -result "*not found*"
+
+test session-delete-4.0 {delete removes session} -setup {
+    ::mcp::session::reset
+} -body {
+    set sid [::mcp::session::create "spawn5" "host5" "user5" "mcp_test"]
+    ::mcp::session::delete $sid
+    ::mcp::session::get $sid
+} -result {}
+
+test session-delete-4.1 {delete on non-existent session is safe} -setup {
+    ::mcp::session::reset
+} -body {
+    ::mcp::session::delete "nonexistent"
+    expr 1
+} -result 1
+
+test session-list-5.0 {list_all returns all IDs} -setup {
+    ::mcp::session::reset
+} -body {
+    ::mcp::session::create "spawn6" "host6" "user6" "mcp_test"
+    ::mcp::session::create "spawn7" "host7" "user7" "mcp_test"
+    set ids [::mcp::session::list_all]
+    llength $ids
+} -result 2
+
+test session-list-5.1 {list_by_mcp_session filters correctly} -setup {
+    ::mcp::session::reset
+} -body {
+    ::mcp::session::create "spawn8" "host8" "user8" "mcp_a"
+    ::mcp::session::create "spawn9" "host9" "user9" "mcp_a"
+    ::mcp::session::create "spawn10" "host10" "user10" "mcp_b"
+    set ids [::mcp::session::list_by_mcp_session "mcp_a"]
+    llength $ids
+} -result 2
+
+test session-find-5.2 {find_idle finds idle sessions} -setup {
+    ::mcp::session::reset
+} -body {
+    set sid1 [::mcp::session::create "spawn11" "host11" "user11" "mcp_test"]
+    set sid2 [::mcp::session::create "spawn12" "host11" "user11" "mcp_test"]
+    ::mcp::session::acquire $sid1
+    set idles [::mcp::session::find_idle "host11" "user11"]
+    expr {$sid2 in $idles && $sid1 ni $idles}
+} -result 1
+
+test session-count-6.0 {count returns correct number} -setup {
+    ::mcp::session::reset
+} -body {
+    set initial [::mcp::session::count]
+    ::mcp::session::create "spawn13" "host13" "user13" "mcp_test"
+    expr {[::mcp::session::count] == $initial + 1}
+} -result 1
+
+test session-count-6.1 {count_by_host filters correctly} -setup {
+    ::mcp::session::reset
+} -body {
+    ::mcp::session::create "spawn14" "hostA" "user14" "mcp_test"
+    ::mcp::session::create "spawn15" "hostA" "user15" "mcp_test"
+    ::mcp::session::create "spawn16" "hostB" "user16" "mcp_test"
+    ::mcp::session::count_by_host "hostA"
+} -result 2
+
+test session-acquire-7.0 {acquire marks session in use} -setup {
+    ::mcp::session::reset
+} -body {
+    set sid [::mcp::session::create "spawn17" "host17" "user17" "mcp_test"]
+    ::mcp::session::acquire $sid
+    set data [::mcp::session::get $sid]
+    dict get $data in_use
+} -result 1
+
+test session-acquire-7.1 {acquire on already-in-use throws} -setup {
+    ::mcp::session::reset
+} -body {
+    set sid [::mcp::session::create "spawn18" "host18" "user18" "mcp_test"]
+    ::mcp::session::acquire $sid
+    ::mcp::session::acquire $sid
+} -returnCodes error -match glob -result "*already in use*"
+
+test session-release-8.0 {release marks session not in use} -setup {
+    ::mcp::session::reset
+} -body {
+    set sid [::mcp::session::create "spawn19" "host19" "user19" "mcp_test"]
+    ::mcp::session::acquire $sid
+    ::mcp::session::release $sid
+    set data [::mcp::session::get $sid]
+    dict get $data in_use
+} -result 0
+
+test session-limit-9.0 {at_limit returns false when under limit} -setup {
+    ::mcp::session::reset
+} -body {
+    ::mcp::session::at_limit
+} -result 0
+
+test session-limit-9.1 {at_limit returns true when at limit} -setup {
+    ::mcp::session::reset
+    set ::mcp::session::max_sessions 3
+} -body {
+    ::mcp::session::create "spawn20" "host20" "user20" "mcp_test"
+    ::mcp::session::create "spawn21" "host21" "user21" "mcp_test"
+    ::mcp::session::create "spawn22" "host22" "user22" "mcp_test"
+    ::mcp::session::at_limit
+} -cleanup {
+    set ::mcp::session::max_sessions 50
+} -result 1
+
+test session-limit-9.2 {create throws when at limit} -setup {
+    ::mcp::session::reset
+    set ::mcp::session::max_sessions 2
+} -body {
+    ::mcp::session::create "spawn23" "host23" "user23" "mcp_test"
+    ::mcp::session::create "spawn24" "host24" "user24" "mcp_test"
+    ::mcp::session::create "spawn25" "host25" "user25" "mcp_test"
+} -cleanup {
+    set ::mcp::session::max_sessions 50
+} -returnCodes error -match glob -result "*limit*reached*"
+
+#===========================================================================
+# MCP SESSION TESTS
+#===========================================================================
+
+test mcp-create-10.0 {create MCP session returns ID} -setup {
+    ::mcp::mcp_session::reset
+} -body {
+    set mid [::mcp::mcp_session::create [dict create name "test" version "1.0"]]
+    regexp {^mcp_[0-9a-f]+$} $mid
+} -result 1
+
+test mcp-create-10.1 {create MCP session stores data} -setup {
+    ::mcp::mcp_session::reset
+} -body {
+    set mid [::mcp::mcp_session::create [dict create name "testclient" version "2.0"]]
+    set data [::mcp::mcp_session::get $mid]
+    dict get [dict get $data client_info] name
+} -result "testclient"
+
+test mcp-get-11.0 {get returns empty for invalid session} -setup {
+    ::mcp::mcp_session::reset
+} -body {
+    ::mcp::mcp_session::get "invalid_mcp_id"
+} -result {}
+
+test mcp-exists-11.1 {exists returns true for valid session} -setup {
+    ::mcp::mcp_session::reset
+} -body {
+    set mid [::mcp::mcp_session::create [dict create name "test" version "1.0"]]
+    ::mcp::mcp_session::exists $mid
+} -result 1
+
+test mcp-exists-11.2 {exists returns false for invalid session} -setup {
+    ::mcp::mcp_session::reset
+} -body {
+    ::mcp::mcp_session::exists "invalid"
+} -result 0
+
+test mcp-ssh-12.0 {add_ssh_session associates session} -setup {
+    ::mcp::mcp_session::reset
+} -body {
+    set mid [::mcp::mcp_session::create [dict create name "test" version "1.0"]]
+    ::mcp::mcp_session::add_ssh_session $mid "sess_test123"
+    set data [::mcp::mcp_session::get $mid]
+    expr {"sess_test123" in [dict get $data ssh_sessions]}
+} -result 1
+
+test mcp-ssh-12.1 {add_ssh_session prevents duplicates} -setup {
+    ::mcp::mcp_session::reset
+} -body {
+    set mid [::mcp::mcp_session::create [dict create name "test" version "1.0"]]
+    ::mcp::mcp_session::add_ssh_session $mid "sess_dup"
+    ::mcp::mcp_session::add_ssh_session $mid "sess_dup"
+    set data [::mcp::mcp_session::get $mid]
+    llength [dict get $data ssh_sessions]
+} -result 1
+
+test mcp-ssh-12.2 {remove_ssh_session removes session} -setup {
+    ::mcp::mcp_session::reset
+} -body {
+    set mid [::mcp::mcp_session::create [dict create name "test" version "1.0"]]
+    ::mcp::mcp_session::add_ssh_session $mid "sess_remove"
+    ::mcp::mcp_session::remove_ssh_session $mid "sess_remove"
+    set data [::mcp::mcp_session::get $mid]
+    expr {"sess_remove" ni [dict get $data ssh_sessions]}
+} -result 1
+
+test mcp-ssh-12.3 {list_ssh_sessions returns list} -setup {
+    ::mcp::mcp_session::reset
+} -body {
+    set mid [::mcp::mcp_session::create [dict create name "test" version "1.0"]]
+    ::mcp::mcp_session::add_ssh_session $mid "sess_a"
+    ::mcp::mcp_session::add_ssh_session $mid "sess_b"
+    llength [::mcp::mcp_session::list_ssh_sessions $mid]
+} -result 2
+
+test mcp-count-13.0 {count returns correct number} -setup {
+    ::mcp::mcp_session::reset
+} -body {
+    ::mcp::mcp_session::create [dict create name "a" version "1.0"]
+    ::mcp::mcp_session::create [dict create name "b" version "1.0"]
+    ::mcp::mcp_session::count
+} -result 2
+
+test mcp-list-13.1 {list_all returns all IDs} -setup {
+    ::mcp::mcp_session::reset
+} -body {
+    ::mcp::mcp_session::create [dict create name "a" version "1.0"]
+    ::mcp::mcp_session::create [dict create name "b" version "1.0"]
+    llength [::mcp::mcp_session::list_all]
+} -result 2
+
+test mcp-cleanup-14.0 {cleanup removes MCP session} -setup {
+    ::mcp::mcp_session::reset
+} -body {
+    set mid [::mcp::mcp_session::create [dict create name "test" version "1.0"]]
+    ::mcp::mcp_session::cleanup $mid
+    ::mcp::mcp_session::exists $mid
+} -result 0
+
+test mcp-touch-15.0 {touch updates last_used_at} -setup {
+    ::mcp::mcp_session::reset
+} -body {
+    set mid [::mcp::mcp_session::create [dict create name "test" version "1.0"]]
+    set data1 [::mcp::mcp_session::get $mid]
+    after 10
+    ::mcp::mcp_session::touch $mid
+    set data2 [::mcp::mcp_session::get $mid]
+    expr {[dict get $data2 last_used_at] >= [dict get $data1 last_used_at]}
+} -result 1
+
+cleanupTests

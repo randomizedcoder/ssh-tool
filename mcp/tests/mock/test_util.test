@@ -1,0 +1,82 @@
+#!/usr/bin/env tclsh
+# test_util.test - Tests for mcp::util module
+
+package require tcltest
+namespace import ::tcltest::*
+
+# Source the module
+set script_dir [file dirname [info script]]
+source [file join $script_dir "../../lib/util.tcl"]
+
+test util-id-1.0 {generate_id returns prefixed ID} -body {
+    set id [::mcp::util::generate_id "sess"]
+    regexp {^sess_[0-9a-f]{8}$} $id
+} -result 1
+
+test util-id-1.1 {generate_id with custom prefix} -body {
+    set id [::mcp::util::generate_id "mcp"]
+    regexp {^mcp_[0-9a-f]{8}$} $id
+} -result 1
+
+test util-id-1.2 {generate_id returns unique values} -body {
+    set ids [list]
+    for {set i 0} {$i < 100} {incr i} {
+        lappend ids [::mcp::util::generate_id "test"]
+    }
+    # Check all unique
+    expr {[llength [lsort -unique $ids]] == 100}
+} -result 1
+
+test util-time-2.0 {now_ms returns numeric value} -body {
+    # clock milliseconds returns a wide integer in Tcl 8.6
+    string is wideinteger -strict [::mcp::util::now_ms]
+} -result 1
+
+test util-time-2.1 {now_ms returns reasonable value} -body {
+    set ms [::mcp::util::now_ms]
+    # Should be after year 2020 in milliseconds
+    expr {$ms > 1577836800000}
+} -result 1
+
+test util-time-2.2 {now_iso returns ISO8601 format} -body {
+    set iso [::mcp::util::now_iso]
+    regexp {^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$} $iso
+} -result 1
+
+test util-dict-3.0 {dict_get_default returns existing value} -body {
+    set d [dict create foo bar baz 42]
+    ::mcp::util::dict_get_default $d foo "default"
+} -result "bar"
+
+test util-dict-3.1 {dict_get_default returns default for missing key} -body {
+    set d [dict create foo bar]
+    ::mcp::util::dict_get_default $d missing "default"
+} -result "default"
+
+test util-dict-3.2 {dict_get_default works with empty dict} -body {
+    set d [dict create]
+    ::mcp::util::dict_get_default $d key "fallback"
+} -result "fallback"
+
+test util-trunc-4.0 {truncate leaves short strings unchanged} -body {
+    ::mcp::util::truncate "hello" 10
+} -result "hello"
+
+test util-trunc-4.1 {truncate shortens long strings} -body {
+    set result [::mcp::util::truncate "hello world" 8]
+    expr {[string length $result] <= 8}
+} -result 1
+
+test util-trunc-4.2 {truncate adds suffix} -body {
+    ::mcp::util::truncate "hello world" 8 "..."
+} -result "hello..."
+
+test util-trunc-4.3 {truncate with custom suffix} -body {
+    ::mcp::util::truncate "hello world" 7 ".."
+} -result "hello.."
+
+test util-trunc-4.4 {truncate handles exact length} -body {
+    ::mcp::util::truncate "hello" 5
+} -result "hello"
+
+cleanupTests

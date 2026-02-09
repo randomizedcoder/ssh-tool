@@ -1,0 +1,198 @@
+#!/usr/bin/env tclsh
+# test_lifecycle.test - Tests for mcp::lifecycle module
+#
+# These tests focus on lifecycle management logic.
+# Tests requiring actual SSH connections are skipped in mock tests.
+
+package require tcltest
+namespace import ::tcltest::*
+
+# Source dependencies
+set script_dir [file dirname [info script]]
+source [file join $script_dir "../../lib/util.tcl"]
+source [file join $script_dir "../../lib/log.tcl"]
+source [file join $script_dir "../../lib/metrics.tcl"]
+source [file join $script_dir "../../lib/security.tcl"]
+source [file join $script_dir "../../lib/session.tcl"]
+source [file join $script_dir "../../lib/mcp_session.tcl"]
+source [file join $script_dir "../../lib/pool.tcl"]
+source [file join $script_dir "../../lib/lifecycle.tcl"]
+
+# Suppress log output in tests
+::mcp::log::init ERROR [open /dev/null w]
+
+# Reset state
+proc setup_lifecycle {} {
+    ::mcp::session::reset
+    ::mcp::mcp_session::reset
+    ::mcp::pool::reset
+    ::mcp::metrics::reset
+    set ::mcp::lifecycle::shutting_down 0
+    ::mcp::lifecycle::stop_reaper
+}
+
+#===========================================================================
+# INITIALIZATION TESTS
+#===========================================================================
+
+test lifecycle-init-1.0 {init starts reaper} -setup {
+    setup_lifecycle
+} -body {
+    ::mcp::lifecycle::init
+    expr {$::mcp::lifecycle::reaper_timer ne ""}
+} -cleanup {
+    ::mcp::lifecycle::stop_reaper
+} -result 1
+
+test lifecycle-init-1.1 {is_shutting_down returns false initially} -setup {
+    setup_lifecycle
+} -body {
+    ::mcp::lifecycle::is_shutting_down
+} -result 0
+
+#===========================================================================
+# CONFIGURATION TESTS
+#===========================================================================
+
+test lifecycle-config-2.0 {set_grace_period updates value} -setup {
+    setup_lifecycle
+} -body {
+    ::mcp::lifecycle::set_grace_period 10000
+    set ::mcp::lifecycle::grace_period_ms
+} -result 10000
+
+test lifecycle-config-2.1 {set_grace_period rejects negative} -setup {
+    setup_lifecycle
+} -body {
+    catch {::mcp::lifecycle::set_grace_period -1} err
+    expr {[string first "non-negative" $err] >= 0}
+} -result 1
+
+test lifecycle-config-2.2 {set_reaper_interval updates value} -setup {
+    setup_lifecycle
+} -body {
+    ::mcp::lifecycle::set_reaper_interval 2000
+    set ::mcp::lifecycle::reaper_interval_ms
+} -result 2000
+
+test lifecycle-config-2.3 {set_reaper_interval rejects too small} -setup {
+    setup_lifecycle
+} -body {
+    catch {::mcp::lifecycle::set_reaper_interval 500} err
+    expr {[string first "at least" $err] >= 0}
+} -result 1
+
+#===========================================================================
+# REAPER TESTS
+#===========================================================================
+
+test lifecycle-reaper-3.0 {start_reaper creates timer} -setup {
+    setup_lifecycle
+} -body {
+    ::mcp::lifecycle::start_reaper
+    expr {$::mcp::lifecycle::reaper_timer ne ""}
+} -cleanup {
+    ::mcp::lifecycle::stop_reaper
+} -result 1
+
+test lifecycle-reaper-3.1 {stop_reaper clears timer} -setup {
+    setup_lifecycle
+    ::mcp::lifecycle::start_reaper
+} -body {
+    ::mcp::lifecycle::stop_reaper
+    expr {$::mcp::lifecycle::reaper_timer eq ""}
+} -result 1
+
+test lifecycle-reaper-3.2 {reap_zombies returns count} -setup {
+    setup_lifecycle
+} -body {
+    # No zombies should exist in this test environment
+    set count [::mcp::lifecycle::reap_zombies]
+    expr {$count >= 0}
+} -result 1
+
+test lifecycle-reaper-3.3 {double start_reaper is safe} -setup {
+    setup_lifecycle
+} -body {
+    ::mcp::lifecycle::start_reaper
+    set first_timer $::mcp::lifecycle::reaper_timer
+    ::mcp::lifecycle::start_reaper
+    # Should return early, same timer
+    expr {$::mcp::lifecycle::reaper_timer eq $first_timer}
+} -cleanup {
+    ::mcp::lifecycle::stop_reaper
+} -result 1
+
+test lifecycle-reaper-3.4 {double stop_reaper is safe} -setup {
+    setup_lifecycle
+    ::mcp::lifecycle::start_reaper
+} -body {
+    ::mcp::lifecycle::stop_reaper
+    ::mcp::lifecycle::stop_reaper
+    expr {$::mcp::lifecycle::reaper_timer eq ""}
+} -result 1
+
+#===========================================================================
+# SESSION COUNTING TESTS
+#===========================================================================
+
+test lifecycle-session-4.0 {_count_active_sessions with no sessions} -setup {
+    setup_lifecycle
+} -body {
+    ::mcp::lifecycle::_count_active_sessions
+} -result 0
+
+test lifecycle-session-4.1 {_count_active_sessions counts in_use} -setup {
+    setup_lifecycle
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+    set sid [::mcp::session::create "spawn1" "host1" "user1" $mid]
+    ::mcp::session::acquire $sid
+} -body {
+    ::mcp::lifecycle::_count_active_sessions
+} -result 1
+
+test lifecycle-session-4.2 {_count_active_sessions ignores released} -setup {
+    setup_lifecycle
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+    set sid [::mcp::session::create "spawn1" "host1" "user1" $mid]
+    ::mcp::session::acquire $sid
+    ::mcp::session::release $sid
+} -body {
+    ::mcp::lifecycle::_count_active_sessions
+} -result 0
+
+#===========================================================================
+# SHUTDOWN FLAG TESTS
+#===========================================================================
+
+test lifecycle-shutdown-5.0 {is_shutting_down reflects state} -setup {
+    setup_lifecycle
+} -body {
+    set before [::mcp::lifecycle::is_shutting_down]
+    set ::mcp::lifecycle::shutting_down 1
+    set after [::mcp::lifecycle::is_shutting_down]
+    list $before $after
+} -cleanup {
+    set ::mcp::lifecycle::shutting_down 0
+} -result {0 1}
+
+#===========================================================================
+# CLOSE ALL SESSIONS TESTS
+#===========================================================================
+
+test lifecycle-close-6.0 {_close_all_sessions removes sessions} -setup {
+    setup_lifecycle
+    set mid [::mcp::mcp_session::create {name test version 1.0}]
+    # Create mock sessions (spawn_id won't be valid but test won't actually close)
+    set sid1 [::mcp::session::create "mock_spawn1" "host1" "user1" $mid]
+    set sid2 [::mcp::session::create "mock_spawn2" "host2" "user2" $mid]
+} -body {
+    set before [::mcp::session::count]
+    # This will fail to actually close the mock spawn_ids but should still
+    # remove sessions from tracking
+    catch {::mcp::lifecycle::_close_all_sessions}
+    set after [::mcp::session::count]
+    list $before $after
+} -result {2 0}
+
+cleanupTests

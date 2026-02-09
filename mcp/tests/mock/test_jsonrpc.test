@@ -1,0 +1,281 @@
+#!/usr/bin/env tclsh
+# test_jsonrpc.test - Tests for mcp::jsonrpc module
+# Uses built-in JSON parser (no tcllib dependency)
+
+package require tcltest
+namespace import ::tcltest::*
+
+# Source dependencies
+set script_dir [file dirname [info script]]
+source [file join $script_dir "../../lib/jsonrpc.tcl"]
+
+#===========================================================================
+# PARSE TESTS
+#===========================================================================
+
+test jsonrpc-parse-1.0 {parse valid JSON} -body {
+    set req [::mcp::jsonrpc::parse {{"jsonrpc":"2.0","id":1,"method":"test"}}]
+    dict get $req method
+} -result "test"
+
+test jsonrpc-parse-1.1 {parse extracts id} -body {
+    set req [::mcp::jsonrpc::parse {{"jsonrpc":"2.0","id":42,"method":"test"}}]
+    dict get $req id
+} -result "42"
+
+test jsonrpc-parse-1.2 {parse extracts params} -body {
+    set req [::mcp::jsonrpc::parse {{"jsonrpc":"2.0","id":1,"method":"test","params":{"foo":"bar"}}}]
+    set params [dict get $req params]
+    dict get $params foo
+} -result "bar"
+
+test jsonrpc-parse-1.3 {parse invalid JSON throws error} -body {
+    catch {::mcp::jsonrpc::parse {not valid json}} err
+    expr {$err ne ""}
+} -result 1
+
+test jsonrpc-parse-1.4 {parse handles nested objects} -body {
+    set req [::mcp::jsonrpc::parse {{"jsonrpc":"2.0","id":1,"method":"test","params":{"nested":{"key":"value"}}}}]
+    set params [dict get $req params]
+    set nested [dict get $params nested]
+    dict get $nested key
+} -result "value"
+
+test jsonrpc-parse-1.5 {parse handles arrays} -body {
+    set req [::mcp::jsonrpc::parse {{"jsonrpc":"2.0","id":1,"method":"test","params":{"list":[1,2,3]}}}]
+    set params [dict get $req params]
+    set list [dict get $params list]
+    lindex $list 1
+} -result "2"
+
+test jsonrpc-parse-1.6 {parse handles strings with escapes} -body {
+    set req [::mcp::jsonrpc::parse {{"jsonrpc":"2.0","id":1,"method":"test","params":{"msg":"hello\nworld"}}}]
+    set params [dict get $req params]
+    set msg [dict get $params msg]
+    expr {[string first "\n" $msg] >= 0}
+} -result 1
+
+test jsonrpc-parse-1.7 {parse handles boolean true} -body {
+    set req [::mcp::jsonrpc::parse {{"jsonrpc":"2.0","id":1,"method":"test","params":{"flag":true}}}]
+    set params [dict get $req params]
+    dict get $params flag
+} -result "true"
+
+test jsonrpc-parse-1.8 {parse handles boolean false} -body {
+    set req [::mcp::jsonrpc::parse {{"jsonrpc":"2.0","id":1,"method":"test","params":{"flag":false}}}]
+    set params [dict get $req params]
+    dict get $params flag
+} -result "false"
+
+test jsonrpc-parse-1.9 {parse handles null} -body {
+    set req [::mcp::jsonrpc::parse {{"jsonrpc":"2.0","id":1,"method":"test","params":{"value":null}}}]
+    set params [dict get $req params]
+    dict get $params value
+} -result "null"
+
+#===========================================================================
+# VALIDATE TESTS
+#===========================================================================
+
+test jsonrpc-validate-2.0 {validate accepts valid request} -body {
+    set req [dict create jsonrpc "2.0" id 1 method "test"]
+    ::mcp::jsonrpc::validate $req
+} -result 1
+
+test jsonrpc-validate-2.1 {validate rejects missing jsonrpc} -body {
+    set req [dict create id 1 method "test"]
+    ::mcp::jsonrpc::validate $req
+} -returnCodes error -match glob -result "*missing jsonrpc*"
+
+test jsonrpc-validate-2.2 {validate rejects wrong version} -body {
+    set req [dict create jsonrpc "1.0" id 1 method "test"]
+    ::mcp::jsonrpc::validate $req
+} -returnCodes error -match glob -result "*must be*2.0*"
+
+test jsonrpc-validate-2.3 {validate rejects missing method} -body {
+    set req [dict create jsonrpc "2.0" id 1]
+    ::mcp::jsonrpc::validate $req
+} -returnCodes error -match glob -result "*missing method*"
+
+test jsonrpc-validate-2.4 {validate rejects empty method} -body {
+    set req [dict create jsonrpc "2.0" id 1 method ""]
+    ::mcp::jsonrpc::validate $req
+} -returnCodes error -match glob -result "*cannot be empty*"
+
+#===========================================================================
+# SUCCESS RESPONSE TESTS
+#===========================================================================
+
+test jsonrpc-success-3.0 {success response has correct structure} -body {
+    set resp [::mcp::jsonrpc::success 1 [dict create foo bar]]
+    set parsed [::mcp::jsonrpc::json_to_dict $resp]
+    expr {
+        [dict get $parsed jsonrpc] eq "2.0" &&
+        [dict exists $parsed result]
+    }
+} -result 1
+
+test jsonrpc-success-3.1 {success response includes id} -body {
+    set resp [::mcp::jsonrpc::success 42 [dict create data test]]
+    set parsed [::mcp::jsonrpc::json_to_dict $resp]
+    dict get $parsed id
+} -result "42"
+
+test jsonrpc-success-3.2 {success response with string id} -body {
+    set resp [::mcp::jsonrpc::success "abc123" [dict create data test]]
+    set parsed [::mcp::jsonrpc::json_to_dict $resp]
+    dict get $parsed id
+} -result "abc123"
+
+test jsonrpc-success-3.3 {success response with null id} -body {
+    set resp [::mcp::jsonrpc::success "null" [dict create data test]]
+    expr {[string first "\"id\":null" $resp] >= 0}
+} -result 1
+
+#===========================================================================
+# ERROR RESPONSE TESTS
+#===========================================================================
+
+test jsonrpc-error-4.0 {error response has correct structure} -body {
+    set resp [::mcp::jsonrpc::error_response 1 -32600 "Invalid Request"]
+    set parsed [::mcp::jsonrpc::json_to_dict $resp]
+    expr {
+        [dict get $parsed jsonrpc] eq "2.0" &&
+        [dict exists $parsed error]
+    }
+} -result 1
+
+test jsonrpc-error-4.1 {error response includes code} -body {
+    set resp [::mcp::jsonrpc::error_response 1 -32600 "Invalid Request"]
+    set parsed [::mcp::jsonrpc::json_to_dict $resp]
+    dict get [dict get $parsed error] code
+} -result "-32600"
+
+test jsonrpc-error-4.2 {error response includes message} -body {
+    set resp [::mcp::jsonrpc::error_response 1 -32600 "Invalid Request"]
+    set parsed [::mcp::jsonrpc::json_to_dict $resp]
+    dict get [dict get $parsed error] message
+} -result "Invalid Request"
+
+test jsonrpc-error-4.3 {error response with data} -body {
+    set resp [::mcp::jsonrpc::error_response 1 -32600 "Error" [dict create detail "extra info"]]
+    set parsed [::mcp::jsonrpc::json_to_dict $resp]
+    set error_obj [dict get $parsed error]
+    expr {[dict exists $error_obj data]}
+} -result 1
+
+#===========================================================================
+# TOOL ERROR TESTS
+#===========================================================================
+
+test jsonrpc-tool-error-5.0 {tool_error returns success with isError} -body {
+    set resp [::mcp::jsonrpc::tool_error 1 500 "Tool failed"]
+    set parsed [::mcp::jsonrpc::json_to_dict $resp]
+    expr {
+        [dict exists $parsed result] &&
+        [dict exists [dict get $parsed result] isError]
+    }
+} -result 1
+
+test jsonrpc-tool-error-5.1 {tool_error sets isError true} -body {
+    set resp [::mcp::jsonrpc::tool_error 1 500 "Tool failed"]
+    set parsed [::mcp::jsonrpc::json_to_dict $resp]
+    dict get [dict get $parsed result] isError
+} -result "true"
+
+#===========================================================================
+# JSON CONVERSION TESTS
+#===========================================================================
+
+test jsonrpc-json-6.0 {dict_to_json handles simple dict} -body {
+    set json [::mcp::jsonrpc::dict_to_json [dict create foo bar]]
+    expr {[string first "foo" $json] >= 0 && [string first "bar" $json] >= 0}
+} -result 1
+
+test jsonrpc-json-6.1 {dict_to_json handles numbers} -body {
+    set json [::mcp::jsonrpc::dict_to_json [dict create num 42]]
+    expr {[string first ":42" $json] >= 0}
+} -result 1
+
+test jsonrpc-json-6.2 {dict_to_json handles nested dict} -body {
+    set json [::mcp::jsonrpc::dict_to_json [dict create outer [dict create inner value]]]
+    expr {[string first "inner" $json] >= 0}
+} -result 1
+
+test jsonrpc-json-6.3 {dict_to_json handles boolean true} -body {
+    set json [::mcp::jsonrpc::dict_to_json "true"]
+    expr {$json eq "true"}
+} -result 1
+
+test jsonrpc-json-6.4 {dict_to_json handles boolean false} -body {
+    set json [::mcp::jsonrpc::dict_to_json "false"]
+    expr {$json eq "false"}
+} -result 1
+
+test jsonrpc-json-6.5 {dict_to_json handles null} -body {
+    set json [::mcp::jsonrpc::dict_to_json "null"]
+    expr {$json eq "null"}
+} -result 1
+
+test jsonrpc-json-6.6 {roundtrip dict} -body {
+    set original [dict create name "test" count 42 flag true]
+    set json [::mcp::jsonrpc::dict_to_json $original]
+    set parsed [::mcp::jsonrpc::json_to_dict $json]
+    expr {
+        [dict get $parsed name] eq "test" &&
+        [dict get $parsed count] eq "42" &&
+        [dict get $parsed flag] eq "true"
+    }
+} -result 1
+
+#===========================================================================
+# HELPER TESTS
+#===========================================================================
+
+test jsonrpc-helper-7.0 {get_id returns id when present} -body {
+    set req [dict create jsonrpc "2.0" id 123 method "test"]
+    ::mcp::jsonrpc::get_id $req
+} -result 123
+
+test jsonrpc-helper-7.1 {get_id returns null when missing} -body {
+    set req [dict create jsonrpc "2.0" method "test"]
+    ::mcp::jsonrpc::get_id $req
+} -result "null"
+
+test jsonrpc-helper-7.2 {get_params returns params when present} -body {
+    set req [dict create jsonrpc "2.0" id 1 method "test" params [dict create foo bar]]
+    set params [::mcp::jsonrpc::get_params $req]
+    dict get $params foo
+} -result "bar"
+
+test jsonrpc-helper-7.3 {get_params returns empty when missing} -body {
+    set req [dict create jsonrpc "2.0" id 1 method "test"]
+    set params [::mcp::jsonrpc::get_params $req]
+    expr {$params eq {}}
+} -result 1
+
+#===========================================================================
+# ESCAPE STRING TESTS
+#===========================================================================
+
+test jsonrpc-escape-8.0 {escape handles newline} -body {
+    set result [::mcp::jsonrpc::_escape_string "line1\nline2"]
+    expr {[string first "\\n" $result] >= 0}
+} -result 1
+
+test jsonrpc-escape-8.1 {escape handles tab} -body {
+    set result [::mcp::jsonrpc::_escape_string "col1\tcol2"]
+    expr {[string first "\\t" $result] >= 0}
+} -result 1
+
+test jsonrpc-escape-8.2 {escape handles quote} -body {
+    set result [::mcp::jsonrpc::_escape_string {say "hello"}]
+    expr {[string first "\\\"" $result] >= 0}
+} -result 1
+
+test jsonrpc-escape-8.3 {escape handles backslash} -body {
+    set result [::mcp::jsonrpc::_escape_string {c:\path}]
+    expr {[string first "\\\\" $result] >= 0}
+} -result 1
+
+cleanupTests

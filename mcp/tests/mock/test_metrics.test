@@ -1,0 +1,153 @@
+#!/usr/bin/env tclsh
+# test_metrics.test - Tests for mcp::metrics module
+
+package require tcltest
+namespace import ::tcltest::*
+
+# Source the module
+set script_dir [file dirname [info script]]
+source [file join $script_dir "../../lib/metrics.tcl"]
+
+# Reset metrics before each test
+proc setup_metrics {} {
+    ::mcp::metrics::reset
+}
+
+test metrics-counter-1.0 {counter increments correctly} -setup {
+    setup_metrics
+} -body {
+    ::mcp::metrics::counter_inc "test_counter" 1 {host "localhost"}
+    ::mcp::metrics::counter_inc "test_counter" 5 {host "localhost"}
+    set output [::mcp::metrics::format]
+    regexp {test_counter\{host="localhost"\} 6} $output
+} -result 1
+
+test metrics-counter-1.1 {counter default increment is 1} -setup {
+    setup_metrics
+} -body {
+    ::mcp::metrics::counter_inc "test_counter"
+    ::mcp::metrics::counter_inc "test_counter"
+    set output [::mcp::metrics::format]
+    regexp {test_counter 2} $output
+} -result 1
+
+test metrics-counter-1.2 {counters with different labels are separate} -setup {
+    setup_metrics
+} -body {
+    ::mcp::metrics::counter_inc "requests" 1 {host "server1"}
+    ::mcp::metrics::counter_inc "requests" 2 {host "server2"}
+    set output [::mcp::metrics::format]
+    expr {[regexp {requests\{host="server1"\} 1} $output] && \
+          [regexp {requests\{host="server2"\} 2} $output]}
+} -result 1
+
+test metrics-gauge-2.0 {gauge set and get} -setup {
+    setup_metrics
+} -body {
+    ::mcp::metrics::gauge_set "test_gauge" 42 {}
+    set output [::mcp::metrics::format]
+    regexp {test_gauge 42} $output
+} -result 1
+
+test metrics-gauge-2.1 {gauge increment} -setup {
+    setup_metrics
+} -body {
+    ::mcp::metrics::gauge_set "sessions" 10 {}
+    ::mcp::metrics::gauge_inc "sessions" 5 {}
+    set output [::mcp::metrics::format]
+    regexp {sessions 15} $output
+} -result 1
+
+test metrics-gauge-2.2 {gauge decrement} -setup {
+    setup_metrics
+} -body {
+    ::mcp::metrics::gauge_set "sessions" 10 {}
+    ::mcp::metrics::gauge_dec "sessions" 3 {}
+    set output [::mcp::metrics::format]
+    regexp {sessions 7} $output
+} -result 1
+
+test metrics-gauge-2.3 {gauge with labels} -setup {
+    setup_metrics
+} -body {
+    ::mcp::metrics::gauge_set "connections" 5 {host "server1" pool "main"}
+    set output [::mcp::metrics::format]
+    regexp {connections\{host="server1",pool="main"\} 5} $output
+} -result 1
+
+test metrics-histogram-3.0 {histogram tracks count and sum} -setup {
+    setup_metrics
+} -body {
+    ::mcp::metrics::histogram_observe "test_hist" 0.5 {}
+    ::mcp::metrics::histogram_observe "test_hist" 1.5 {}
+    set output [::mcp::metrics::format]
+    expr {[regexp {test_hist_count 2} $output] && [regexp {test_hist_sum 2} $output]}
+} -result 1
+
+test metrics-histogram-3.1 {histogram buckets increment correctly} -setup {
+    setup_metrics
+} -body {
+    ::mcp::metrics::histogram_observe "duration" 0.05 {}
+    ::mcp::metrics::histogram_observe "duration" 0.5 {}
+    ::mcp::metrics::histogram_observe "duration" 5.0 {}
+    set output [::mcp::metrics::format]
+    # 0.05 falls in 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, +Inf buckets
+    # 0.5 falls in 0.5, 1.0, 2.5, 5.0, 10.0, +Inf buckets
+    # 5.0 falls in 5.0, 10.0, +Inf buckets
+    # So bucket 5.0 should have 3
+    regexp {duration_bucket\{le="5\.0"\} 3} $output
+} -result 1
+
+test metrics-histogram-3.2 {histogram +Inf bucket contains all observations} -setup {
+    setup_metrics
+} -body {
+    ::mcp::metrics::histogram_observe "latency" 0.01 {}
+    ::mcp::metrics::histogram_observe "latency" 100 {}
+    ::mcp::metrics::histogram_observe "latency" 1000 {}
+    set output [::mcp::metrics::format]
+    regexp {latency_bucket\{le="\+Inf"\} 3} $output
+} -result 1
+
+test metrics-labels-4.0 {labels format correctly} -body {
+    set result [::mcp::metrics::_format_labels {host "server1" code "200"}]
+    # Labels should be in sorted order
+    expr {[string first "code=\"200\"" $result] >= 0 && \
+          [string first "host=\"server1\"" $result] >= 0}
+} -result 1
+
+test metrics-labels-4.1 {empty labels produce empty string} -body {
+    set result [::mcp::metrics::_format_labels {}]
+    expr {$result eq ""}
+} -result 1
+
+test metrics-key-4.2 {_make_key without labels} -body {
+    set key [::mcp::metrics::_make_key "metric_name" {}]
+    expr {$key eq "metric_name"}
+} -result 1
+
+test metrics-key-4.3 {_make_key with labels} -body {
+    set key [::mcp::metrics::_make_key "metric_name" {a "1" b "2"}]
+    expr {[string first "metric_name|" $key] == 0}
+} -result 1
+
+test metrics-reset-5.0 {reset clears all metrics} -setup {
+    ::mcp::metrics::counter_inc "counter1" 10
+    ::mcp::metrics::gauge_set "gauge1" 20
+} -body {
+    ::mcp::metrics::reset
+    set output [::mcp::metrics::format]
+    expr {$output eq ""}
+} -result 1
+
+test metrics-format-6.0 {format produces valid prometheus output} -setup {
+    setup_metrics
+} -body {
+    ::mcp::metrics::counter_inc "http_requests_total" 100 {method "GET" status "200"}
+    ::mcp::metrics::gauge_set "active_connections" 5 {}
+    set output [::mcp::metrics::format]
+    # Should have at least these two metrics
+    expr {[string first "http_requests_total" $output] >= 0 && \
+          [string first "active_connections" $output] >= 0}
+} -result 1
+
+cleanupTests
