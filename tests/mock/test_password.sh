@@ -2,7 +2,7 @@
 # test_password.sh - Test password module
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
 cd "$PROJECT_ROOT" || exit 1
 
@@ -10,7 +10,7 @@ expect << 'EXPECT_EOF'
 # Test script for password module
 
 set project_root [pwd]
-source [file join $project_root "tests/helpers/test_utils.tcl"]
+source [file join $project_root "tests/mock/helpers/test_utils.tcl"]
 source [file join $project_root "lib/common/debug.tcl"]
 source [file join $project_root "lib/auth/password.tcl"]
 

@@ -119,14 +119,18 @@ ssh-tool/
 │       ├── hostname.tcl        # Hostname retrieval
 │       └── cat_file.tcl        # File reading
 ├── tests/
-│   ├── run_all_tests.sh        # Master test runner
+│   ├── run_all_tests.sh        # Runs mock tests
 │   ├── run_shellcheck.sh       # Shell script linter
-│   ├── test_*.sh               # Component tests (8 files)
-│   └── helpers/
-│       ├── test_utils.tcl      # Test assertions
-│       ├── mock_ssh.tcl        # Mock SSH session
-│       ├── mock_ssh_server.sh  # Fake SSH server
-│       └── mock_terminal.tcl   # Mock terminal
+│   ├── mock/                   # Mock-based tests (no real SSH)
+│   │   ├── test_*.sh           # 8 component tests
+│   │   └── helpers/
+│   │       ├── test_utils.tcl  # Test assertions
+│   │       ├── mock_ssh.tcl    # Mock SSH session
+│   │       ├── mock_ssh_server.sh  # Fake SSH server
+│   │       └── mock_terminal.tcl   # Mock terminal
+│   └── real/                   # Real SSH tests
+│       ├── run_real_tests.sh   # Real test runner
+│       └── test_*.sh           # 5 real SSH tests
 ├── DESIGN.md                   # Detailed design document
 └── README.md                   # This file
 ```
@@ -138,13 +142,16 @@ ssh-tool/
 The core reliability feature. After SSH connection:
 
 1. Disable terminal features that interfere (bracket-paste mode, colors)
-2. Set a unique prompt: `XPCT<pid>>` (e.g., `XPCT12345>`)
-3. All subsequent command output is captured between command echo and prompt
+2. Clear PS0, PS2, and PROMPT_COMMAND to prevent extra output
+3. Disable systemd shell integration (OSC 3008 sequences on modern Fedora/RHEL)
+4. Set a unique prompt: `XPCT<pid>>` (e.g., `XPCT12345>`)
+5. All subsequent command output is captured between command echo and prompt
 
 This works regardless of:
 - Custom PS1 prompts (colors, git status, paths)
 - Different shells (bash, zsh, sh, csh)
-- ANSI escape codes
+- ANSI escape codes and OSC sequences
+- Systemd terminal integration (Fedora 43+)
 - Varying prompt styles across Linux/FreeBSD/Darwin
 
 ### Command Output Capture
@@ -153,8 +160,9 @@ When running a command:
 
 1. Send command + carriage return
 2. Skip first line (command echo)
-3. Capture all lines until prompt appears
-4. Return captured lines joined with newlines
+3. Strip ANSI/OSC escape sequences from each line
+4. Capture all lines until prompt appears
+5. Return captured lines joined with newlines
 
 ### Line-by-Line Processing
 
@@ -162,26 +170,44 @@ Output is captured line-by-line to:
 - Keep expect buffer small (prevents overflow on large outputs)
 - Skip the echoed command reliably
 - Filter out any lines containing the prompt marker
+- Strip terminal escape sequences (CSI, OSC) that pollute output
 
 ## Running Tests
 
-### All Tests
+### Mock Tests (No SSH Required)
 
 ```bash
+# Run all mock tests
 ./tests/run_all_tests.sh
+
+# Individual mock tests
+./tests/mock/test_debug.sh      # Debug module
+./tests/mock/test_prompt.sh     # Prompt detection
+./tests/mock/test_password.sh   # Password handling
+./tests/mock/test_sudo.sh       # Sudo password handling
+./tests/mock/test_ssh.sh        # SSH connection
+./tests/mock/test_sudo_exec.sh  # Sudo execution
+./tests/mock/test_hostname.sh   # Hostname command
+./tests/mock/test_cat_file.sh   # File reading
 ```
 
-### Individual Tests
+### Real Tests (Requires SSH Target)
 
 ```bash
-./tests/test_debug.sh      # Debug module
-./tests/test_prompt.sh     # Prompt detection
-./tests/test_password.sh   # Password handling
-./tests/test_sudo.sh       # Sudo password handling
-./tests/test_ssh.sh        # SSH connection
-./tests/test_sudo_exec.sh  # Sudo execution
-./tests/test_hostname.sh   # Hostname command
-./tests/test_cat_file.sh   # File reading
+# Set target host and credentials
+export SSH_HOST=192.168.122.163
+export SSH_USER=das
+export PASSWORD=your-password
+
+# Run all real tests
+./tests/real/run_real_tests.sh
+
+# Individual real tests
+./tests/real/test_ssh_connect.sh    # SSH connection
+./tests/real/test_prompt_init.sh    # Prompt initialization
+./tests/real/test_run_commands.sh   # Command execution
+./tests/real/test_hostname.sh       # Hostname command
+./tests/real/test_cat_file.sh       # File reading
 ```
 
 ### Shell Script Linting
@@ -190,13 +216,20 @@ Output is captured line-by-line to:
 ./tests/run_shellcheck.sh
 ```
 
-All 11 shell scripts pass shellcheck.
+All 20 shell scripts pass shellcheck.
 
 ## Test Architecture
 
+### Two-Tier Testing Strategy
+
+The test suite uses two complementary approaches:
+
+1. **Mock Tests** (`tests/mock/`) - Fast, no network required, test component logic
+2. **Real Tests** (`tests/real/`) - Validate against actual SSH targets, catch integration issues
+
 ### Mock-Based Testing
 
-Tests use mock components instead of real SSH connections:
+Mock tests use simulated components instead of real SSH connections:
 
 - **mock_ssh_server.sh** - A bash script that simulates SSH server behavior:
   - Password prompts
@@ -212,7 +245,27 @@ Tests use mock components instead of real SSH connections:
   - `test::assert_contains` - Substring check
   - `test::assert_match` - Regex match
 
+### Real SSH Testing
+
+Real tests connect to an actual SSH target to validate:
+
+- SSH connection with password authentication
+- Prompt initialization on real shells
+- Command execution and output capture
+- Escape sequence handling (ANSI, OSC)
+- Integration with systemd shell features (Fedora 43+)
+
+**Environment variables for real tests:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SSH_HOST` | 192.168.122.163 | Target host |
+| `SSH_USER` | das | SSH username |
+| `PASSWORD` | (required) | SSH password |
+
 ### Test Coverage
+
+**Mock Tests (11 test files):**
 
 | Component | Tests | Status |
 |-----------|-------|--------|
@@ -224,7 +277,21 @@ Tests use mock components instead of real SSH connections:
 | sudo_exec.tcl | 3 | Pass |
 | hostname.tcl | 3 | Pass |
 | cat_file.tcl | 6 | Pass |
-| **Total** | **41** | **All Pass** |
+| escape_sequences | 10 | Pass |
+| timeouts | 5 | Pass |
+| edge_cases | 6 | Pass |
+
+**Real Tests (5 test files):**
+
+| Test | Assertions | Status |
+|------|------------|--------|
+| SSH Connection | 4 | Pass |
+| Prompt Init | 3 | Pass |
+| Run Commands | 6 | Pass |
+| Hostname | 2 | Pass |
+| Cat File | 6 | Pass |
+
+**Total: 16 test files, 83 assertions - All Pass**
 
 ### What Is Tested
 
@@ -244,17 +311,23 @@ Tests use mock components instead of real SSH connections:
 - File reading with security validation
 - Filename escaping for shell safety
 
-**Tested with local bash (no SSH):**
-- prompt::init, prompt::run, prompt::wait against real bash
-- commands::hostname::get against real hostname command
-- commands::cat_file::read against real files
+**Tested with real SSH (Fedora 43):**
+- SSH connection with password authentication
+- Prompt initialization on remote shell
+- Command execution and output capture (echo, pwd, uname, seq)
+- Multi-line output capture (up to 100 lines tested)
+- Hostname and FQDN retrieval
+- File reading (/etc/hostname, /etc/os-release, /etc/passwd)
+- File existence and readability checks
+- ANSI/OSC escape sequence stripping
+- Systemd shell integration handling (OSC 3008 sequences)
 
 ### What Is NOT Tested
 
-**Requires real SSH target:**
-- Actual SSH connection to remote host
-- Real sudo elevation
+**Would require additional targets:**
 - Cross-platform behavior (FreeBSD, Darwin)
+- Different shell types on real hosts (zsh, csh, tcsh)
+- Real sudo elevation (requires sudo access on test host)
 - Network timeout handling
 - SSH key authentication
 - Multi-hop SSH connections
@@ -271,7 +344,7 @@ Tests use mock components instead of real SSH connections:
 1. **Password-only authentication** - No SSH key support
 2. **Single command focus** - Tool runs one command (cat file) and exits
 3. **No session reuse** - Each invocation creates a new SSH connection
-4. **Bash-centric testing** - Tests run against bash; other shells tested via mock only
+4. **Linux-focused testing** - Real tests run on Fedora; FreeBSD/Darwin tested via mock only
 5. **No Windows support** - Requires POSIX environment
 
 ## Extending the Framework
@@ -290,11 +363,12 @@ namespace eval commands::your_command {
 ```
 
 2. Source it in `bin/ssh-automation`
-3. Add test in `tests/test_your_command.sh`
+3. Add mock test in `tests/mock/test_your_command.sh`
+4. Add real test in `tests/real/test_your_command.sh` (optional)
 
 ### Adding Mock Behaviors
 
-Edit `tests/helpers/mock_ssh_server.sh` and add case handlers:
+Edit `tests/mock/helpers/mock_ssh_server.sh` and add case handlers:
 ```bash
 "your-command")
     echo "mock output"

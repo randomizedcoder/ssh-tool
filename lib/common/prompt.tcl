@@ -53,7 +53,12 @@ namespace eval prompt {
         }
 
         # Disable TERM features that cause issues (colors, readline)
-        send -i $spawn_id "export TERM=dumb PROMPT_COMMAND=''\r"
+        # Also clear PS0, PS2 and any shell integration functions
+        send -i $spawn_id "export TERM=dumb PROMPT_COMMAND='' PS0='' PS2='> '\r"
+        expect -i $spawn_id -timeout 2 -re {.} { exp_continue } timeout { }
+
+        # Disable systemd shell integration (Fedora uses this for OSC 3008 sequences)
+        send -i $spawn_id "unset -f __vte_prompt_command 2>/dev/null; unset -f __osc_133_first_time 2>/dev/null\r"
         expect -i $spawn_id -timeout 2 -re {.} { exp_continue } timeout { }
 
         # Shell-agnostic prompt setting
@@ -116,6 +121,22 @@ namespace eval prompt {
             }
     }
 
+    # Strip ANSI escape sequences and OSC sequences from a string
+    # Handles: CSI sequences (\033[...), OSC sequences (\033]...\007 or \033]...\033\\)
+    proc strip_escapes {str} {
+        # Remove OSC sequences: ESC ] ... (BEL or ESC \)
+        # Format: \033]....\007 or \033]....\033\\
+        regsub -all {\033\][^\007\033]*(?:\007|\033\\)} $str "" str
+
+        # Remove CSI sequences: ESC [ ... (ending in letter)
+        regsub -all {\033\[[0-9;?]*[A-Za-z]} $str "" str
+
+        # Remove any remaining bare ESC characters and control chars
+        regsub -all {\033} $str "" str
+
+        return $str
+    }
+
     # High-performance line-by-line capture with first-line skip
     # Returns: output string (lines joined with newlines)
     proc run {spawn_id cmd} {
@@ -141,6 +162,8 @@ namespace eval prompt {
             expect -i $spawn_id \
                 -re {([^\r\n]*)\r\n} {
                     set line $expect_out(1,string)
+                    # Strip ANSI/OSC escape sequences from the line
+                    set line [strip_escapes $line]
                     if {!$first_line_skipped} {
                         # Skip echoed command
                         set first_line_skipped 1

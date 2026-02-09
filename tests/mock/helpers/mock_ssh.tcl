@@ -17,7 +17,7 @@ namespace eval mock_ssh {
     # Get the mock server script path
     proc get_mock_server {} {
         variable project_root
-        return [file join $project_root "tests/helpers/mock_ssh_server.sh"]
+        return [file join $project_root "tests/mock/helpers/mock_ssh_server.sh"]
     }
 
     # Spawn a mock SSH session

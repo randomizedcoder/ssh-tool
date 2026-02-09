@@ -2,7 +2,7 @@
 # test_ssh.sh - Test SSH connection module
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
 cd "$PROJECT_ROOT" || exit 1
 
@@ -12,11 +12,11 @@ expect << 'EXPECT_EOF'
 package require Expect
 
 set project_root [pwd]
-source [file join $project_root "tests/helpers/test_utils.tcl"]
+source [file join $project_root "tests/mock/helpers/test_utils.tcl"]
 source [file join $project_root "lib/common/debug.tcl"]
 source [file join $project_root "lib/common/prompt.tcl"]
 source [file join $project_root "lib/connection/ssh.tcl"]
-source [file join $project_root "tests/helpers/mock_ssh.tcl"]
+source [file join $project_root "tests/mock/helpers/mock_ssh.tcl"]
 
 # Initialize debug and mock_ssh
 debug::init 0

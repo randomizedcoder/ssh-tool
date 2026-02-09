@@ -2,6 +2,10 @@
 # run_shellcheck.sh - Run shellcheck on all shell scripts
 #
 # Runs shellcheck on all .sh files in the project and reports results
+#
+# POLICY: We NEVER disable shellcheck warnings. All issues must be fixed
+# in the code itself. Shellcheck helps us maintain code quality and catch
+# bugs before they reach production. Disabling checks hides problems.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -30,6 +34,8 @@ FAILED_SCRIPTS=()
 
 for script in "${SCRIPTS[@]}"; do
     echo -n "Checking $script ... "
+    # Run shellcheck without any disabled checks.
+    # If a script fails, we fix the code - we do NOT disable shellcheck warnings.
     if shellcheck -x "$script" > /dev/null 2>&1; then
         echo "PASS"
         PASS=$((PASS + 1))
