@@ -16,10 +16,10 @@ namespace eval connection::ssh {
 
     # Establish SSH connection
     # Returns spawn_id on success, empty string on failure
-    proc connect {host user password {insecure 0}} {
+    proc connect {host user password {insecure 0} {port 22}} {
         variable connections
 
-        debug::log 3 "Connecting to $user@$host"
+        debug::log 3 "Connecting to $user@$host:$port"
 
         # Check for insecure mode from environment if not specified
         if {!$insecure && [info exists ::env(INSECURE)] && $::env(INSECURE) eq "1"} {
@@ -32,9 +32,10 @@ namespace eval connection::ssh {
             spawn ssh -o StrictHostKeyChecking=no \
                       -o UserKnownHostsFile=/dev/null \
                       -o LogLevel=ERROR \
+                      -p $port \
                       $user@$host
         } else {
-            spawn ssh $user@$host
+            spawn ssh -p $port $user@$host
         }
 
         set sid $spawn_id

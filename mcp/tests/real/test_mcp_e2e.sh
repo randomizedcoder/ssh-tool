@@ -12,6 +12,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=mcp_client.sh
 source "$SCRIPT_DIR/mcp_client.sh"
 
 # Colors for output
@@ -50,7 +51,7 @@ check_prereqs() {
         cd "$SCRIPT_DIR/../.."
         ./server.tcl --port "${MCP_PORT:-3000}" &
         MCP_PID=$!
-        trap "kill $MCP_PID 2>/dev/null" EXIT
+        trap 'kill $MCP_PID 2>/dev/null' EXIT
         sleep 2
 
         if ! mcp_health > /dev/null 2>&1; then

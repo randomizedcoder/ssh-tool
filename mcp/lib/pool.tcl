@@ -3,7 +3,7 @@
 # Manages reusable SSH connections for efficiency.
 # Uses jittered cleanup to prevent thundering herd.
 
-package require Tcl 8.6
+package require Tcl 8.6-
 
 namespace eval ::mcp::pool {
     # Pool configuration
@@ -61,6 +61,10 @@ namespace eval ::mcp::pool {
                 pool_key $pool_key \
                 session_id $session_id \
             ]
+            # Emit pool hit metric
+            if {[namespace exists ::mcp::metrics]} {
+                ::mcp::metrics::pool_hit [list host $host]
+            }
             return $session_id
         }
 
@@ -75,6 +79,12 @@ namespace eval ::mcp::pool {
         # Create new connection
         dict incr stats misses
         dict incr stats creates
+
+        # Emit pool miss and create metrics
+        if {[namespace exists ::mcp::metrics]} {
+            ::mcp::metrics::pool_miss [list host $host]
+            ::mcp::metrics::pool_create [list host $host]
+        }
 
         # Use existing SSH module from lib/connection
         set spawn_id [::connection::ssh::connect $host $user $password $insecure]
@@ -177,6 +187,10 @@ namespace eval ::mcp::pool {
                         pool_key $pool_key \
                         error $err \
                     ]
+                    # Emit health fail metric
+                    if {[namespace exists ::mcp::metrics]} {
+                        ::mcp::metrics::pool_health_fail
+                    }
                 }
             }
         }
@@ -233,6 +247,10 @@ namespace eval ::mcp::pool {
                     lappend expired $session_id
                     incr idle_count -1
                     dict incr stats expires
+                    # Emit expire metric
+                    if {[namespace exists ::mcp::metrics]} {
+                        ::mcp::metrics::pool_expire
+                    }
                 }
             }
         }

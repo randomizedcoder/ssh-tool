@@ -37,6 +37,7 @@ proc parse_args {argv} {
         host "" \
         filename "" \
         user "" \
+        port 22 \
         debug 0 \
         insecure 0 \
     ]
@@ -74,6 +75,14 @@ proc parse_args {argv} {
                 }
                 dict set options user [lindex $argv $i]
             }
+            "--port" {
+                incr i
+                if {$i >= $argc} {
+                    puts stderr "Error: --port requires an argument"
+                    exit 1
+                }
+                dict set options port [lindex $argv $i]
+            }
             "--debug" {
                 incr i
                 if {$i >= $argc} {
@@ -109,6 +118,7 @@ proc print_usage {} {
     puts stderr ""
     puts stderr "Optional arguments:"
     puts stderr "  --user <username>    SSH username (default: \$USER)"
+    puts stderr "  --port <port>        SSH port (default: 22)"
     puts stderr "  --debug <0-7>        Debug level (default: 0)"
     puts stderr "  --insecure           Skip host key verification"
     puts stderr "  --help, -h           Show this help message"
@@ -146,6 +156,7 @@ proc main {argv} {
     set host [dict get $options host]
     set filename [dict get $options filename]
     set user [dict get $options user]
+    set port [dict get $options port]
     set debug_level [dict get $options debug]
     set insecure [dict get $options insecure]
 
@@ -153,15 +164,15 @@ proc main {argv} {
     debug::init $debug_level
 
     debug::log 3 "Starting ssh-automation"
-    debug::log 4 "Host: $host, User: $user, File: $filename"
+    debug::log 4 "Host: $host, Port: $port, User: $user, File: $filename"
 
     # Get passwords
     set ssh_password [auth::password::get]
     set sudo_password [auth::sudo::get]
 
     # Connect to host
-    debug::log 3 "Connecting to $user@$host"
-    set spawn_id [connection::ssh::connect $host $user $ssh_password $insecure]
+    debug::log 3 "Connecting to $user@$host:$port"
+    set spawn_id [connection::ssh::connect $host $user $ssh_password $insecure $port]
 
     if {$spawn_id eq ""} {
         puts stderr "Error: Failed to connect to $host"

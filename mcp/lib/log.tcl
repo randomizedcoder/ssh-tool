@@ -3,7 +3,7 @@
 # Provides machine-parseable logging for production environments.
 # All log entries are JSON objects written to stdout.
 
-package require Tcl 8.6
+package require Tcl 8.6-
 
 namespace eval ::mcp::log {
     # Log level constants (match syslog)

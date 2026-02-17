@@ -1,33 +1,62 @@
 # SSH Automation Tool
 
-A modular TCL/Expect framework for SSH automation with robust prompt detection. Designed for automating tasks on remote Linux, FreeBSD, and Darwin (macOS) systems.
+A modular TCL/Expect framework for SSH automation with robust prompt detection. Includes both a CLI tool and an MCP (Model Context Protocol) server for LLM-driven automation.
+
+**Built with Tcl 9.0** - This project includes a port of Expect to Tcl 9.0, enabling 64-bit data handling and improved performance. See [Requirements](#requirements) for details.
 
 ## Overview
 
-This tool provides a reliable way to:
-- Connect to remote hosts via SSH
-- Authenticate with password
-- Elevate to root via sudo
-- Execute commands and capture output
-- Read files from remote systems
+This project provides two ways to automate SSH tasks:
 
-The key innovation is **unique prompt injection** - after connecting, the tool sets a predictable prompt (`XPCT<pid>>`) that can be reliably detected regardless of the remote system's shell configuration, custom PS1 prompts, or ANSI escape codes.
+1. **CLI Tool** (`bin/ssh-automation`) - Direct command-line SSH automation
+2. **MCP Server** (`mcp/server.tcl`) - HTTP server exposing SSH tools via JSON-RPC for LLM integration
+
+Both share the same core libraries and use **unique prompt injection** - after connecting, a predictable prompt (`XPCT<pid>>`) is set that can be reliably detected regardless of the remote system's shell configuration.
 
 ## Requirements
 
-- **expect** - TCL/Expect interpreter
+- **Tcl 9.0** - TCL interpreter (64-bit support, improved performance)
+- **expect-tcl9** - Expect compiled against Tcl 9.0 (see below)
 - **bash** - For test scripts
-- **shellcheck** - For shell script linting (optional, for development)
+- **shellcheck** - For shell script linting
 
-Install on Fedora:
+### Expect with Tcl 9.0
+
+This project uses **Expect compiled against Tcl 9.0**, which required porting Expect to the new Tcl 9 API. Key changes include:
+
+- `Tcl_Size` (64-bit) replaces `int` for size parameters
+- Channel driver updated to `TCL_CHANNEL_VERSION_5` with `close2Proc`
+- Compatibility layer for removed macros (`_ANSI_ARGS_`, `CONST*`, `TCL_VARARGS*`)
+- `Tcl_EvalTokens` wrapper using `Tcl_EvalTokensStandard`
+
+The port is available in `nix/expect-tcl9/` and has been submitted as [nixpkgs PR #490930](https://github.com/NixOS/nixpkgs/pull/490930).
+
+### Using Nix (recommended)
+
 ```bash
-sudo dnf install expect shellcheck
+# Enter development shell with all dependencies (Tcl 9.0 + expect-tcl9)
+nix develop
+
+# Verify versions
+expect -v        # expect version 5.45.4
+tclsh9.0 <<< 'puts [info patchlevel]'  # 9.0.1
 ```
 
-Install on Debian/Ubuntu:
+### Install on Fedora/RHEL (Tcl 8.6 fallback)
+
 ```bash
-sudo apt install expect shellcheck
+sudo dnf install tcl expect shellcheck
 ```
+
+### Install on Debian/Ubuntu (Tcl 8.6 fallback)
+
+```bash
+sudo apt install tcl expect shellcheck
+```
+
+---
+
+# Part 1: CLI Tool
 
 ## Quick Start
 
@@ -39,8 +68,8 @@ export SUDO="your-sudo-password"
 # Run the tool
 ./bin/ssh-automation --host 192.168.1.100 --filename /etc/os-release
 
-# With explicit user
-./bin/ssh-automation --host 192.168.1.100 --user admin --filename /etc/os-release
+# With explicit user and port
+./bin/ssh-automation --host 192.168.1.100 --port 22 --user admin --filename /etc/os-release
 
 # With debug output
 ./bin/ssh-automation --host 192.168.1.100 --filename /etc/os-release --debug 4
@@ -56,6 +85,7 @@ export SUDO="your-sudo-password"
 | `--host` | Yes | - | Hostname or IP address |
 | `--filename` | Yes | - | File to cat on remote host |
 | `--user` | No | `$USER` | SSH username |
+| `--port` | No | 22 | SSH port |
 | `--debug` | No | 0 | Debug level 0-7 |
 | `--insecure` | No | off | Skip host key verification |
 
@@ -80,64 +110,528 @@ export SUDO="your-sudo-password"
 | 6 | Trace | Line-by-line output capture |
 | 7 | Max | Internal state |
 
-## Insecure Mode
+---
 
-For ephemeral VMs, containers, or NixOS microvms that get recreated frequently, use insecure mode to skip host key verification:
+# Part 2: MCP Server
+
+The MCP (Model Context Protocol) server exposes SSH automation capabilities via HTTP/JSON-RPC, enabling LLMs to securely interact with remote systems.
+
+## Features
+
+- **HTTP/1.1 server** with JSON-RPC 2.0 protocol
+- **Built-in JSON parser** (no tcllib dependency)
+- **Mandatory security controls** - command allowlist, path validation
+- **Session management** with connection pooling
+- **Prometheus metrics** at `/metrics`
+- **Graceful shutdown** with zombie process reaping
+
+## Quick Start
 
 ```bash
-# Via command line
-./bin/ssh-automation --host 192.168.1.100 --filename /etc/os-release --insecure
+# Start the server (localhost only by default)
+./mcp/server.tcl
 
-# Via environment variable
-export INSECURE=1
-./bin/ssh-automation --host 192.168.1.100 --filename /etc/os-release
+# With custom options
+./mcp/server.tcl --port 8080 --bind 0.0.0.0 --debug DEBUG
 ```
 
-This uses:
-- `-o StrictHostKeyChecking=no` - Don't verify host key
-- `-o UserKnownHostsFile=/dev/null` - Don't save to known_hosts
-- `-o LogLevel=ERROR` - Suppress warning messages
+## Server Arguments
 
-## Project Structure
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--port` | 3000 | Port to listen on |
+| `--bind` | 127.0.0.1 | Address to bind to |
+| `--debug` | INFO | Log level: ERROR, WARN, INFO, DEBUG |
+
+## Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | POST | JSON-RPC (MCP protocol) |
+| `/mcp` | POST | JSON-RPC (MCP protocol) |
+| `/health` | GET | Health check (JSON) |
+| `/metrics` | GET | Prometheus metrics |
+
+## MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `ssh_connect` | Connect to remote host via SSH |
+| `ssh_disconnect` | Disconnect SSH session |
+| `ssh_run_command` | Run command on remote host |
+| `ssh_run` | Alias for ssh_run_command |
+| `ssh_cat_file` | Read file from remote host |
+| `ssh_hostname` | Get remote hostname |
+| `ssh_list_sessions` | List active SSH sessions |
+| `ssh_pool_stats` | Get connection pool statistics |
+| `ssh_network_interfaces` | List network interfaces with state and statistics |
+| `ssh_network_routes` | Show routing tables (IPv4/IPv6) |
+| `ssh_network_firewall` | Show firewall rules (auto-detects nft/iptables) |
+| `ssh_network_qdisc` | Show traffic control qdiscs |
+| `ssh_network_connectivity` | Test connectivity (ping/dns/traceroute) |
+| `ssh_network_compare` | Compare network state changes |
+| `ssh_batch_commands` | Execute multiple commands (max 5) |
+
+## Example: JSON-RPC Request
+
+```bash
+# Initialize session
+curl -X POST http://localhost:3000/ \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+
+# Connect to SSH host
+curl -X POST http://localhost:3000/ \
+  -H "Content-Type: application/json" \
+  -H "Mcp-Session-Id: <session-id>" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+    "name":"ssh_connect",
+    "arguments":{"host":"192.168.1.100","user":"admin","password":"secret"}
+  }}'
+
+# Run command
+curl -X POST http://localhost:3000/ \
+  -H "Content-Type: application/json" \
+  -H "Mcp-Session-Id: <session-id>" \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{
+    "name":"ssh_run_command",
+    "arguments":{"session_id":"<ssh-session-id>","command":"hostname"}
+  }}'
+```
+
+## Security
+
+The MCP server implements **mandatory security controls** - there is no bypass.
+
+### Command Allowlist
+
+Only safe, read-only commands are permitted:
+- `ls`, `cat`, `head`, `tail`, `grep`, `wc`
+- `ps`, `df`, `du`, `top -bn1`
+- `hostname`, `uname`, `whoami`, `id`, `date`, `uptime`, `pwd`
+- `stat`, `file`, `sort`, `uniq`, `cut`
+
+### Blocked Patterns
+
+- **Shell metacharacters**: `|`, `;`, `&&`, `||`, `` ` ``, `$()`, `>`, `<`
+- **Dangerous commands**: `rm`, `chmod`, `chown`, `mv`, `cp`, `mkdir`
+- **Code execution**: `find -exec`, `awk`, `sed`, `xargs`, `env`
+- **Interpreters**: `python`, `perl`, `ruby`, `php`, `sh`, `bash`
+- **Network tools**: `curl`, `wget`, `nc`, `ssh`, `telnet`
+- **Privilege escalation**: `sudo`, `su`
+
+### Path Validation
+
+- **Allowed directories**: `/etc`, `/var/log`, `/home`, `/tmp`, `/opt`, `/usr/share`, `/proc`, `/sys`
+- **Blocked files**: `/etc/shadow`, `/etc/sudoers`, SSH keys, bash history
+
+### Rate Limiting
+
+- 100 requests per minute per client
+- Returns HTTP 429 when exceeded
+
+### Network Commands
+
+The MCP server supports network inspection commands for system administration and diagnostics. These commands follow the same security model - read-only operations only.
+
+**Allowed Network Commands:**
+
+| Command | Example | Description |
+|---------|---------|-------------|
+| `ip -j link/addr/route show` | `ip -j addr show` | Interface and routing info (JSON) |
+| `ip netns list` | `ip netns list` | List network namespaces |
+| `ethtool -S/-i/-k` | `ethtool -S eth0` | Interface stats (read-only flags only) |
+| `tc -j qdisc/class/filter show` | `tc -j qdisc show` | Traffic control inspection |
+| `nft -j list ruleset/tables` | `nft -j list ruleset` | Firewall rules (nftables) |
+| `iptables -L -n` | `iptables -L -n` | Firewall rules (iptables) |
+| `bridge link/fdb/vlan show` | `bridge -j link show` | Bridge inspection |
+| `conntrack -L` | `conntrack -L` | Connection tracking |
+| `sysctl net.*` | `sysctl net.ipv4.ip_forward` | Network sysctl values |
+| `ping -c [1-5]` | `ping -c 3 host` | Connectivity test (max 5 packets) |
+| `traceroute -m [1-15]` | `traceroute -m 10 host` | Path tracing (max 15 hops) |
+| `dig`, `nslookup`, `host` | `dig example.com` | DNS queries (A/AAAA only) |
+| `mtr --report -c [1-5]` | `mtr --report -c 3 host` | Network path analysis |
+
+**Blocked Network Operations:**
+
+- Any modification: `ip link set`, `tc qdisc add`, `nft add`, etc.
+- Dangerous ethtool flags: `-E` (EEPROM write), `-f` (flash), `-W` (wake-on-lan), etc.
+- Unlimited ping/traceroute (max 5 packets, 15 hops enforced)
+- DNS zone transfers (`dig AXFR`), reverse lookups (`dig -x`)
+- Flood ping (`ping -f`)
+
+---
+
+# Part 3: Nix Integration
+
+The project includes comprehensive Nix flake support for reproducible development and testing.
+
+## Development Shell
+
+```bash
+# Enter development environment with all tools
+nix develop
+
+# Available: expect, tcl, tclint, shellcheck, curl, jq, sshpass
+```
+
+## MicroVM Testing
+
+Ephemeral NixOS MicroVMs for integration testing without affecting your system. The project provides a 3-VM architecture:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              Host                                            │
+│   ┌───────────────────────────────────────────────────────────────────────┐ │
+│   │                     sshbr0 (10.178.0.1/24)                            │ │
+│   └───────┬─────────────────────┬─────────────────────┬───────────────────┘ │
+│           │                     │                     │                      │
+│       sshtap0               sshtap1               sshtap2                    │
+└───────────│─────────────────────│─────────────────────│──────────────────────┘
+            │                     │                     │
+  ┌─────────┴─────────┐ ┌─────────┴─────────┐ ┌─────────┴─────────┐
+  │    Agent VM       │ │     MCP VM        │ │    Target VM      │
+  │   10.178.0.5      │ │   10.178.0.10     │ │   10.178.0.20     │
+  │                   │ │                   │ │                   │
+  │  TCL Test Client  │ │  MCP Server :3000 │ │  SSHD :2222-2228  │
+  └───────────────────┘ └───────────────────┘ └───────────────────┘
+```
+
+- **Agent VM** - TCL 9 test client that simulates an AI agent talking to MCP
+- **MCP VM** - Runs the MCP server on port 3000
+- **Target VM** - Multiple SSHD instances with various configurations
+
+```bash
+# Build test VMs
+nix build .#agent-vm-debug         # TCL test agent VM
+nix build .#mcp-vm-debug           # MCP server VM
+nix build .#ssh-target-vm-debug    # Multi-SSHD target VM
+
+# Run target VM (user-mode networking)
+./result/bin/microvm-run
+
+# SSH ports available on target VM:
+#   2222 - standard (password auth)
+#   2223 - keyonly (pubkey only)
+#   2224 - fancyprompt (complex prompts)
+#   2225 - slowauth (2s delay)
+#   2226 - denyall (all auth rejected)
+#   2227 - unstable (restarts every 5s)
+#   2228 - rootlogin (root permitted)
+#
+# Netem ports (network degradation):
+#   2322-2328 - latency/loss simulation
+```
+
+## TAP Networking (requires sudo)
+
+For full 3-VM testing with direct network access:
+
+```bash
+# Setup bridge network with 3 TAP devices
+sudo nix run .#ssh-network-setup
+
+# Terminal 1: Start target VM
+nix build .#ssh-target-vm-tap-debug && ./result/bin/microvm-run
+
+# Terminal 2: Start MCP VM
+nix build .#mcp-vm-tap-debug && ./result/bin/microvm-run
+
+# Terminal 3: Start Agent VM (runs E2E tests automatically in debug mode)
+nix build .#agent-vm-tap-debug && ./result/bin/microvm-run
+
+# Or run tests manually via SSH to agent VM
+nix run .#ssh-vm-ssh-agent -- /etc/agent/run-tests.sh
+
+# VMs accessible at:
+#   Agent VM:  10.178.0.5 (SSH)
+#   MCP VM:    10.178.0.10:3000 (MCP), :22 (SSH)
+#   Target VM: 10.178.0.20:2222-2228 (SSH)
+
+# Teardown
+sudo nix run .#ssh-network-teardown
+```
+
+## TCL Agent Client
+
+The project includes a pure TCL 9 MCP client (`mcp/agent/`) for E2E testing:
+
+```tcl
+# Example: Using the MCP client library
+package require Tcl 9.0
+source mcp/agent/mcp_client.tcl
+
+# Initialize
+::agent::mcp::init "http://10.178.0.10:3000"
+::agent::mcp::initialize "my-agent" "1.0"
+
+# Connect to SSH target
+set result [::agent::mcp::ssh_connect "10.178.0.20" "testuser" "testpass" 2222]
+set session_id [dict get $result session_id]
+
+# Run commands
+set output [::agent::mcp::ssh_run_command $session_id "hostname"]
+puts [::agent::mcp::extract_text $output]
+
+# Read files
+set content [::agent::mcp::ssh_cat_file $session_id "/etc/os-release"]
+
+# Cleanup
+::agent::mcp::ssh_disconnect $session_id
+```
+
+The agent includes:
+- `http_client.tcl` - Pure TCL HTTP/1.1 client (no dependencies)
+- `json.tcl` - JSON parser/encoder
+- `mcp_client.tcl` - High-level MCP protocol client
+- `e2e_test.tcl` - Complete E2E test suite
+
+## Flake Outputs
+
+| Output | Description |
+|--------|-------------|
+| `packages.agent-vm` | Agent VM (user networking) |
+| `packages.agent-vm-debug` | Agent VM with debug mode |
+| `packages.agent-vm-tap` | Agent VM (TAP networking) |
+| `packages.mcp-vm` | MCP server VM |
+| `packages.mcp-vm-debug` | MCP server VM with debug mode |
+| `packages.mcp-vm-tap` | MCP server VM (TAP networking) |
+| `packages.ssh-target-vm` | Target VM (user networking) |
+| `packages.ssh-target-vm-debug` | Target VM with debug mode |
+| `packages.ssh-target-vm-tap` | Target VM (TAP networking) |
+| `devShells.default` | Development environment |
+| `checks.integration` | NixOS integration tests (3 VMs) |
+| `apps.ssh-test-network-inspection` | Network inspection command tests |
+| `apps.ssh-test-network-connectivity` | Connectivity tests (ping, DNS, traceroute) |
+| `apps.ssh-test-network-all` | All network command tests |
+| `apps.ssh-loadtest-quick` | Quick load test (30s) |
+| `apps.ssh-loadtest` | Standard load test runner |
+| `apps.ssh-loadtest-full` | Full load test suite |
+
+---
+
+# Part 4: Load Testing
+
+The project includes a comprehensive load testing framework for measuring MCP server performance, throughput, and latency characteristics.
+
+## Quick Start
+
+```bash
+# Start the 3-VM infrastructure (requires sudo for TAP networking)
+sudo nix run .#ssh-network-setup
+nix build .#ssh-target-vm-tap-debug && ./result/bin/microvm-run &
+nix build .#mcp-vm-tap-debug && ./result/bin/microvm-run &
+
+# Wait for VMs to boot (~30s), then run load tests
+
+# Quick smoke test (30 seconds)
+nix run .#ssh-loadtest-quick
+
+# Full test suite (all 5 scenarios, ~15-20 minutes)
+nix run .#ssh-loadtest-full
+
+# Specific scenario with custom parameters
+nix run .#ssh-loadtest -- command_throughput 120 10  # 120s duration, 10 workers
+
+# Cleanup
+sudo nix run .#ssh-network-teardown
+```
+
+## Load Test Scenarios
+
+| Scenario | Duration | Description |
+|----------|----------|-------------|
+| `connection_rate` | 60s | Measure max SSH connections/second |
+| `command_throughput` | 120s | Measure max commands/second on warm connections |
+| `sustained_load` | 600s | 10-minute stability test for resource leaks |
+| `latency_test` | 60s | Measure latency impact via netem ports (2322-2328) |
+| `exhaustion_test` | 60s | Verify graceful degradation at pool/rate limits |
+
+## Load Test Commands
+
+| Command | Description |
+|---------|-------------|
+| `nix run .#ssh-loadtest-quick` | 30-second smoke test |
+| `nix run .#ssh-loadtest -- <scenario> [duration] [workers]` | Run specific scenario |
+| `nix run .#ssh-loadtest-full` | All 5 scenarios |
+| `nix run .#ssh-loadtest-list` | List available scenarios |
+| `nix run .#ssh-loadtest-connection-rate` | Connection rate test |
+| `nix run .#ssh-loadtest-throughput` | Command throughput test |
+| `nix run .#ssh-loadtest-latency` | Latency sensitivity test |
+| `nix run .#ssh-loadtest-metrics` | Scrape MCP server metrics |
+
+## Manual Usage
+
+```bash
+# List scenarios
+tclsh mcp/agent/loadtest/run.tcl --list-scenarios
+
+# Run with custom options
+tclsh mcp/agent/loadtest/run.tcl \
+  --scenario command_throughput \
+  --duration 60 \
+  --workers 5 \
+  --mcp-host 10.178.0.10 \
+  --target-host 10.178.0.20
+```
+
+## Load Test Output
+
+Results are saved to `/tmp/loadtest_results/<test_id>/`:
+- `*.jsonl` - Raw per-worker results
+- `summary.json` - Aggregated results and metrics
+
+Example report:
+
+```
+======================================================================
+                         LOAD TEST RESULTS
+======================================================================
+
+Test ID:    loadtest_20260212_153045
+Scenario:   command_throughput
+Duration:   120.0s
+
+----------------------------------------------------------------------
+COMMAND THROUGHPUT TEST
+----------------------------------------------------------------------
+
+THROUGHPUT
+  Total Requests:     4,523
+  Successful:         4,515 (99.8%)
+  Failed:             8
+  Requests/Second:    37.7 avg, 52.3 peak
+
+LATENCY (milliseconds)
+  Min:    12.3
+  p50:    42.1
+  p95:    98.5
+  p99:    145.2
+  Max:    312.8
+
+----------------------------------------------------------------------
+POOL STATISTICS
+----------------------------------------------------------------------
+  Hit Rate:           87%
+  Peak Active:        10
+
+----------------------------------------------------------------------
+EXTRAPOLATION (to 8 CPU / 16GB RAM)
+----------------------------------------------------------------------
+  Measured RPS:      37.7 (on 4 cores)
+  Estimated RPS:     64.1 (on 8 cores)
+  Scaling factor:    1.70x
+  Confidence:        MEDIUM (based on linear scaling model)
+======================================================================
+```
+
+## VM Resources for Load Testing
+
+The load test VMs use increased resources for meaningful performance measurements:
+
+| VM | Memory | vCPUs |
+|----|--------|-------|
+| Agent | 512 MB | 2 |
+| MCP | 1 GB | 4 |
+| Target | 1 GB | 4 |
+
+Total: ~2.5 GB RAM, 10 cores
+
+## Metrics Collected
+
+**Client-side metrics:**
+- Request latency (min, p50, p95, p99, max)
+- Throughput (requests/second)
+- Success/error counts
+
+**Server-side metrics (via `/metrics`):**
+- `mcp_pool_hits_total` - Connection pool reuse
+- `mcp_pool_misses_total` - New connections created
+- `mcp_pool_creates_total` - Total connections established
+- `mcp_pool_health_fails_total` - Failed health checks
+- `mcp_ssh_command_duration_seconds` - Command latency histogram
+
+## Extrapolation Methodology
+
+For CPU-bound scenarios, the framework estimates performance on larger hardware:
+
+```
+extrapolated_rps = measured_rps × (target_cpus / test_cpus) × 0.85
+```
+
+Confidence levels based on MCP VM CPU utilization:
+- **< 50%**: LOW - Not CPU bound, scaling may not help
+- **50-80%**: MEDIUM - Likely to scale well
+- **> 80%**: HIGH - Clearly CPU bound, scaling should improve
+
+---
+
+# Project Structure
 
 ```
 ssh-tool/
 ├── bin/
-│   └── ssh-automation          # Primary executable
+│   └── ssh-automation              # CLI executable
 ├── lib/
 │   ├── common/
-│   │   ├── debug.tcl           # Debug/logging (levels 0-7)
-│   │   ├── prompt.tcl          # Robust prompt detection
-│   │   └── utils.tcl           # Utilities (filename validation, escaping)
+│   │   ├── debug.tcl               # Debug/logging
+│   │   ├── prompt.tcl              # Prompt detection
+│   │   └── utils.tcl               # Utilities
 │   ├── auth/
-│   │   ├── password.tcl        # SSH password handling
-│   │   └── sudo.tcl            # Sudo password handling
+│   │   ├── password.tcl            # SSH password
+│   │   └── sudo.tcl                # Sudo password
 │   ├── connection/
-│   │   └── ssh.tcl             # SSH connection management
+│   │   └── ssh.tcl                 # SSH connection
 │   └── commands/
-│       ├── sudo_exec.tcl       # Sudo elevation
-│       ├── hostname.tcl        # Hostname retrieval
-│       └── cat_file.tcl        # File reading
+│       ├── sudo_exec.tcl           # Sudo elevation
+│       ├── hostname.tcl            # Hostname command
+│       └── cat_file.tcl            # File reading
+├── mcp/
+│   ├── server.tcl                  # MCP server entry point
+│   ├── lib/                        # 12 library modules
+│   ├── agent/                      # TCL MCP client (simulated AI agent)
+│   │   ├── http_client.tcl         # Pure TCL HTTP client
+│   │   ├── json.tcl                # JSON parser/encoder
+│   │   ├── mcp_client.tcl          # MCP protocol client
+│   │   ├── e2e_test.tcl            # E2E test suite
+│   │   └── loadtest/               # Load testing framework
+│   │       ├── run.tcl             # Main entry point
+│   │       ├── coordinator.tcl     # Multi-process orchestration
+│   │       ├── worker.tcl          # Load generator process
+│   │       ├── config.tcl          # Configuration
+│   │       ├── scenarios/          # Test scenario definitions
+│   │       ├── metrics/            # Metrics collection
+│   │       └── output/             # Report generation
+│   └── tests/                      # MCP test suites
+├── nix/
+│   ├── constants/                  # Shared configuration
+│   │   ├── network.nix             # Network settings (3 VMs)
+│   │   ├── ports.nix               # Port assignments
+│   │   ├── users.nix               # Test users
+│   │   ├── sshd.nix                # SSHD configurations
+│   │   ├── netem.nix               # Network emulation
+│   │   └── loadtest.nix            # Load test VM resources
+│   ├── tests/
+│   │   ├── e2e-test.nix            # E2E test runners
+│   │   └── loadtest.nix            # Load test runners
+│   ├── shell.nix                   # Development shell
+│   ├── agent-vm.nix                # TCL agent MicroVM
+│   ├── mcp-vm.nix                  # MCP server MicroVM
+│   ├── ssh-target-vm.nix           # Multi-SSHD target MicroVM
+│   ├── network-setup.nix           # TAP/bridge scripts
+│   └── nixos-test.nix              # NixOS test framework (3 VMs)
 ├── tests/
-│   ├── run_all_tests.sh        # Runs mock tests
-│   ├── run_shellcheck.sh       # Shell script linter
-│   ├── mock/                   # Mock-based tests (no real SSH)
-│   │   ├── test_*.sh           # 8 component tests
-│   │   └── helpers/
-│   │       ├── test_utils.tcl  # Test assertions
-│   │       ├── mock_ssh.tcl    # Mock SSH session
-│   │       ├── mock_ssh_server.sh  # Fake SSH server
-│   │       └── mock_terminal.tcl   # Mock terminal
-│   └── real/                   # Real SSH tests
-│       ├── run_real_tests.sh   # Real test runner
-│       └── test_*.sh           # 5 real SSH tests
-├── DESIGN.md                   # Detailed design document
-└── README.md                   # This file
+│   ├── run_all_tests.sh            # CLI test runner
+│   └── mock/                       # 11 CLI test files
+├── flake.nix                       # Nix flake
+└── README.md                       # This file
 ```
 
-## How It Works
+---
 
-### Unique Prompt Injection
+# How It Works
+
+## Unique Prompt Injection
 
 The core reliability feature. After SSH connection:
 
@@ -154,7 +648,7 @@ This works regardless of:
 - Systemd terminal integration (Fedora 43+)
 - Varying prompt styles across Linux/FreeBSD/Darwin
 
-### Command Output Capture
+## Command Output Capture
 
 When running a command:
 
@@ -164,224 +658,144 @@ When running a command:
 4. Capture all lines until prompt appears
 5. Return captured lines joined with newlines
 
-### Line-by-Line Processing
+---
 
-Output is captured line-by-line to:
-- Keep expect buffer small (prevents overflow on large outputs)
-- Skip the echoed command reliably
-- Filter out any lines containing the prompt marker
-- Strip terminal escape sequences (CSI, OSC) that pollute output
+# Running Tests
 
-## Running Tests
-
-### Mock Tests (No SSH Required)
+## CLI Tests
 
 ```bash
-# Run all mock tests
+# Run all CLI mock tests (62 tests)
 ./tests/run_all_tests.sh
 
-# Individual mock tests
-./tests/mock/test_debug.sh      # Debug module
-./tests/mock/test_prompt.sh     # Prompt detection
-./tests/mock/test_password.sh   # Password handling
-./tests/mock/test_sudo.sh       # Sudo password handling
-./tests/mock/test_ssh.sh        # SSH connection
-./tests/mock/test_sudo_exec.sh  # Sudo execution
-./tests/mock/test_hostname.sh   # Hostname command
-./tests/mock/test_cat_file.sh   # File reading
-```
+# Run CLI real tests (requires SSH target)
+SSH_HOST=192.168.1.100 PASSWORD=secret ./tests/real/run_real_tests.sh
 
-### Real Tests (Requires SSH Target)
-
-```bash
-# Set target host and credentials
-export SSH_HOST=192.168.122.163
-export SSH_USER=das
-export PASSWORD=your-password
-
-# Run all real tests
-./tests/real/run_real_tests.sh
-
-# Individual real tests
-./tests/real/test_ssh_connect.sh    # SSH connection
-./tests/real/test_prompt_init.sh    # Prompt initialization
-./tests/real/test_run_commands.sh   # Command execution
-./tests/real/test_hostname.sh       # Hostname command
-./tests/real/test_cat_file.sh       # File reading
-```
-
-### Shell Script Linting
-
-```bash
+# Shell script linting
 ./tests/run_shellcheck.sh
 ```
 
-All 20 shell scripts pass shellcheck.
+## MCP Tests
 
-## Test Architecture
+```bash
+# Run all MCP mock tests (562 tests)
+TCLSH=tclsh ./mcp/tests/run_all_tests.sh
 
-### Two-Tier Testing Strategy
+# Run MCP tests including integration (requires SSH target)
+SSH_HOST=192.168.1.100 PASSWORD=secret ./mcp/tests/run_all_tests.sh --all
+```
 
-The test suite uses two complementary approaches:
+## VM Integration Tests
 
-1. **Mock Tests** (`tests/mock/`) - Fast, no network required, test component logic
-2. **Real Tests** (`tests/real/`) - Validate against actual SSH targets, catch integration issues
+```bash
+# Option 1: Automated NixOS test (3 VMs, fully automated)
+nix build .#checks.x86_64-linux.integration
 
-### Mock-Based Testing
+# Option 2: Manual testing with TAP networking
+sudo nix run .#ssh-network-setup
+nix build .#ssh-target-vm-tap-debug && ./result/bin/microvm-run &
+nix build .#mcp-vm-tap-debug && ./result/bin/microvm-run &
+nix build .#agent-vm-tap-debug && ./result/bin/microvm-run  # Runs E2E tests
 
-Mock tests use simulated components instead of real SSH connections:
+# Option 3: Single VM user-mode testing
+nix build .#ssh-target-vm-debug
+./result/bin/microvm-run &
 
-- **mock_ssh_server.sh** - A bash script that simulates SSH server behavior:
-  - Password prompts
-  - Shell prompts
-  - Command responses (hostname, cat, whoami, etc.)
-  - Error scenarios (auth failure, connection refused, sudo failure)
+# Test SSH (after VM boots ~30s)
+SSHPASS=testpass sshpass -e ssh -p 2222 testuser@localhost hostname
+```
 
-- **mock_ssh.tcl** - TCL wrapper to spawn and manage mock sessions
+## Test Coverage
 
-- **test_utils.tcl** - Test framework with assertions:
-  - `test::assert_eq` - Equality check
-  - `test::assert_true` / `test::assert_false` - Boolean checks
-  - `test::assert_contains` - Substring check
-  - `test::assert_match` - Regex match
+All tests pass with Tcl 9.0 and expect-tcl9.
 
-### Real SSH Testing
+| Category | Tests | Status |
+|----------|-------|--------|
+| CLI mock tests | 62 | ✅ Pass |
+| MCP mock tests | 562 | ✅ Pass |
+| Shellcheck (scripts) | 24 | ✅ Pass |
+| VM integration | 23 | ✅ Pass |
+| **Total** | **671** | **✅ Pass** |
 
-Real tests connect to an actual SSH target to validate:
+### CLI Test Breakdown
 
-- SSH connection with password authentication
-- Prompt initialization on real shells
-- Command execution and output capture
-- Escape sequence handling (ANSI, OSC)
-- Integration with systemd shell features (Fedora 43+)
+| Component | Tests |
+|-----------|-------|
+| debug.tcl | 6 |
+| prompt.tcl | 6 |
+| password.tcl | 6 |
+| sudo.tcl | 6 |
+| ssh.tcl | 5 |
+| sudo_exec.tcl | 3 |
+| hostname.tcl | 3 |
+| cat_file.tcl | 6 |
+| escape_sequences | 10 |
+| timeouts | 5 |
+| edge_cases | 6 |
 
-**Environment variables for real tests:**
+### MCP Test Breakdown
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SSH_HOST` | 192.168.122.163 | Target host |
-| `SSH_USER` | das | SSH username |
-| `PASSWORD` | (required) | SSH password |
+| Component | Tests |
+|-----------|-------|
+| util.tcl | 14 |
+| log.tcl | 18 |
+| metrics.tcl | 16 |
+| security.tcl | 129 |
+| security_network.tcl | 176 |
+| session.tcl | 32 |
+| pool.tcl | 20 |
+| jsonrpc.tcl | 40 |
+| router.tcl | 13 |
+| tools.tcl | 30 |
+| tools_network.tcl | 31 |
+| http.tcl | 27 |
+| lifecycle.tcl | 16 |
 
-### Test Coverage
+### VM Integration Tests
 
-**Mock Tests (11 test files):**
+| Test | Count |
+|------|-------|
+| Base SSH ports (2222-2228) | 7 |
+| Netem ports (2322-2328) | 7 |
+| Root login scenarios | 2 |
+| Multi-user auth | 5 |
+| File access | 2 |
 
-| Component | Tests | Status |
-|-----------|-------|--------|
-| debug.tcl | 6 | Pass |
-| prompt.tcl | 6 | Pass |
-| password.tcl | 6 | Pass |
-| sudo.tcl | 6 | Pass |
-| ssh.tcl | 5 | Pass |
-| sudo_exec.tcl | 3 | Pass |
-| hostname.tcl | 3 | Pass |
-| cat_file.tcl | 6 | Pass |
-| escape_sequences | 10 | Pass |
-| timeouts | 5 | Pass |
-| edge_cases | 6 | Pass |
+### Agent E2E Tests
 
-**Real Tests (5 test files):**
+| Test | Description |
+|------|-------------|
+| Health check | MCP server /health endpoint |
+| Initialize | MCP session initialization |
+| Tools list | Verify available tools |
+| SSH connect | Connect to target via MCP |
+| SSH hostname | Run hostname command |
+| SSH run command | Execute whoami, uname |
+| SSH cat file | Read /etc/hostname, /etc/os-release |
+| SSH disconnect | Clean session teardown |
+| Security: blocked cmd | Verify rm, etc. are blocked |
+| Security: metacharacters | Verify ; && \| are blocked |
 
-| Test | Assertions | Status |
-|------|------------|--------|
-| SSH Connection | 4 | Pass |
-| Prompt Init | 3 | Pass |
-| Run Commands | 6 | Pass |
-| Hostname | 2 | Pass |
-| Cat File | 6 | Pass |
+---
 
-**Total: 16 test files, 83 assertions - All Pass**
+# Known Limitations
 
-### What Is Tested
-
-**Fully tested with mocks:**
-- Debug level initialization and clamping
-- Prompt marker generation (user and root variants)
-- Prompt initialization on shell
-- Command output capture
-- Password retrieval from environment
-- Password caching and clearing
-- Sudo password handling
-- SSH password prompt detection
-- SSH error handling (auth failure, connection refused)
-- Sudo password prompt detection
-- Sudo failure detection
-- Hostname retrieval
-- File reading with security validation
-- Filename escaping for shell safety
-
-**Tested with real SSH (Fedora 43):**
-- SSH connection with password authentication
-- Prompt initialization on remote shell
-- Command execution and output capture (echo, pwd, uname, seq)
-- Multi-line output capture (up to 100 lines tested)
-- Hostname and FQDN retrieval
-- File reading (/etc/hostname, /etc/os-release, /etc/passwd)
-- File existence and readability checks
-- ANSI/OSC escape sequence stripping
-- Systemd shell integration handling (OSC 3008 sequences)
-
-### What Is NOT Tested
-
-**Would require additional targets:**
-- Cross-platform behavior (FreeBSD, Darwin)
-- Different shell types on real hosts (zsh, csh, tcsh)
-- Real sudo elevation (requires sudo access on test host)
-- Network timeout handling
-- SSH key authentication
-- Multi-hop SSH connections
-
-**Not implemented:**
-- SSH key-based authentication (only password auth)
-- Interactive command execution
-- File upload/download (only cat for reading)
-- Multiple command batching in single session
-- Session persistence/reuse
-
-## Known Limitations
-
-1. **Password-only authentication** - No SSH key support
-2. **Single command focus** - Tool runs one command (cat file) and exits
-3. **No session reuse** - Each invocation creates a new SSH connection
-4. **Linux-focused testing** - Real tests run on Fedora; FreeBSD/Darwin tested via mock only
+1. **Password-only authentication** - No SSH key support yet
+2. **Read-only operations** - MCP server only allows read commands
+3. **No file upload** - Only reading via `cat`
+4. **Linux-focused testing** - Real tests on Fedora; FreeBSD/Darwin via mock
 5. **No Windows support** - Requires POSIX environment
 
-## Extending the Framework
+---
 
-### Adding a New Command Module
-
-1. Create `lib/commands/your_command.tcl`:
-```tcl
-namespace eval commands::your_command {
-    proc run {spawn_id args} {
-        debug::log 4 "Running your_command"
-        set output [prompt::run $spawn_id "your-shell-command"]
-        return [string trim $output]
-    }
-}
-```
-
-2. Source it in `bin/ssh-automation`
-3. Add mock test in `tests/mock/test_your_command.sh`
-4. Add real test in `tests/real/test_your_command.sh` (optional)
-
-### Adding Mock Behaviors
-
-Edit `tests/mock/helpers/mock_ssh_server.sh` and add case handlers:
-```bash
-"your-command")
-    echo "mock output"
-    ;;
-```
-
-## License
+# License
 
 See LICENSE file.
 
-## Contributing
+# Contributing
 
-1. Ensure all tests pass: `./tests/run_all_tests.sh`
+1. Ensure all tests pass: `./tests/run_all_tests.sh` and `./mcp/tests/run_all_tests.sh`
 2. Ensure shellcheck passes: `./tests/run_shellcheck.sh`
 3. Add tests for new functionality
-4. Update DESIGN.md for architectural changes
+4. Update design docs for architectural changes
+5. Format Nix files: `nix fmt`

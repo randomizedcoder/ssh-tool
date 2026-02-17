@@ -3,7 +3,7 @@
 # Parses requests and formats responses per JSON-RPC 2.0 spec.
 # Includes built-in JSON parser (no tcllib dependency).
 
-package require Tcl 8.6
+package require Tcl 8.6-
 
 namespace eval ::mcp::jsonrpc {
     # JSON-RPC 2.0 error codes

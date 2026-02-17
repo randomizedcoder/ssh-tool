@@ -85,9 +85,9 @@ mcp_ssh_run() {
     local session_id="$1"
     local command="$2"
 
-    # Escape double quotes in command
+    # Escape double quotes in command (using bash string replacement per SC2001)
     local escaped_cmd
-    escaped_cmd=$(echo "$command" | sed 's/"/\\"/g')
+    escaped_cmd="${command//\"/\\\"}"
 
     mcp_tools_call "ssh_run_command" "{\"session_id\":\"$session_id\",\"command\":\"$escaped_cmd\"}"
 }

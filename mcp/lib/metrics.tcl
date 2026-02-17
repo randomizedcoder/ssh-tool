@@ -2,7 +2,7 @@
 #
 # Exposes metrics in Prometheus text format at /metrics endpoint.
 
-package require Tcl 8.6
+package require Tcl 8.6-
 
 namespace eval ::mcp::metrics {
     # Storage: dict of metric_name -> {type help value labels_data}
@@ -162,6 +162,57 @@ namespace eval ::mcp::metrics {
         set gauges [dict create]
         set counters [dict create]
         set histograms [dict create]
+    }
+
+    #=========================================================================
+    # Pool metrics helpers
+    #=========================================================================
+
+    # Record pool hit
+    proc pool_hit {{labels {}}} {
+        counter_inc "mcp_pool_hits_total" 1 $labels
+    }
+
+    # Record pool miss
+    proc pool_miss {{labels {}}} {
+        counter_inc "mcp_pool_misses_total" 1 $labels
+    }
+
+    # Record pool connection creation
+    proc pool_create {{labels {}}} {
+        counter_inc "mcp_pool_creates_total" 1 $labels
+    }
+
+    # Record pool connection expiry
+    proc pool_expire {{labels {}}} {
+        counter_inc "mcp_pool_expires_total" 1 $labels
+    }
+
+    # Record pool health check failure
+    proc pool_health_fail {{labels {}}} {
+        counter_inc "mcp_pool_health_fails_total" 1 $labels
+    }
+
+    # Update active pool connections gauge
+    proc pool_connections {host active idle} {
+        gauge_set "mcp_pool_connections_active" $active [list host $host]
+        gauge_set "mcp_pool_connections_idle" $idle [list host $host]
+    }
+
+    #=========================================================================
+    # HTTP metrics helpers
+    #=========================================================================
+
+    # Record HTTP request duration
+    proc http_request_duration {method path duration_ms} {
+        set duration_s [expr {$duration_ms / 1000.0}]
+        histogram_observe "mcp_http_request_duration_seconds" $duration_s \
+            [list method $method path $path]
+    }
+
+    # Update active HTTP connections gauge
+    proc http_connections {count} {
+        gauge_set "mcp_http_connections_active" $count
     }
 
     # Line 92-100: Helper for label formatting

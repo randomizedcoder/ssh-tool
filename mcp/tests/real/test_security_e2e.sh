@@ -11,6 +11,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=mcp_client.sh
 source "$SCRIPT_DIR/mcp_client.sh"
 
 # Colors
@@ -39,7 +40,7 @@ check_prereqs() {
         cd "$SCRIPT_DIR/../.."
         ./server.tcl --port "${MCP_PORT:-3000}" &
         MCP_PID=$!
-        trap "kill $MCP_PID 2>/dev/null" EXIT
+        trap 'kill $MCP_PID 2>/dev/null' EXIT
         sleep 2
     fi
 }
@@ -112,11 +113,13 @@ run_command_injection_tests() {
     response=$(mcp_ssh_run "$SSH_SESSION_ID" "ls || rm -rf /")
     expect_blocked "OR chaining" "$response"
 
-    # Command substitution
-    response=$(mcp_ssh_run "$SSH_SESSION_ID" 'echo $(id)')
+    # Command substitution (escaped to keep literal, avoiding SC2016)
+    local cmd_subst_dollar="echo \$(id)"
+    response=$(mcp_ssh_run "$SSH_SESSION_ID" "$cmd_subst_dollar")
     expect_blocked "dollar-paren substitution" "$response"
 
-    response=$(mcp_ssh_run "$SSH_SESSION_ID" 'echo `id`')
+    local cmd_subst_backtick="echo \`id\`"
+    response=$(mcp_ssh_run "$SSH_SESSION_ID" "$cmd_subst_backtick")
     expect_blocked "backtick substitution" "$response"
 
     # Redirects

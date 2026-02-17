@@ -1,0 +1,83 @@
+###################################
+# Wait until we find the prompt from each one - all will be in sync after this block
+# We do this by finding the prompt and removing from the array, when all are done while completes
+###################################
+
+#prompt is prompt to match on
+#timeout multipler allows for some debugging of what is going on
+#spawn_ids_dict is the copy of the spawn_ids we are expect-ing on
+proc expect_and_catch_output { prompt timeout_multiplier spawn_ids_dict } {
+	global output_level;
+	set timeout_count 0;
+	set output_buffer_dict [dict create]; #create empty dict
+	set first_line_spawn_ids_dict [dict get $spawn_ids_dict]; # copy dict to be used to track first line
+	if { $output_level > 110 } { send_user -- "dict size:[dict size $spawn_ids_dict]\n"; };
+	if { $output_level > 110 } { send_user -- "dict keys:[dict keys $spawn_ids_dict]\n"; };
+	expect {
+		-i [dict keys $spawn_ids_dict] -re "\r\n" {
+			# this just matches any new line this mainly keeps the expect buffer small
+			# please note that when spawning /bin/bash we will find the prompt before an \r\n, so expect case won't match on spawn /bin/bash
+			# please further note that because we've probably just sent the command to the process, the first line this matches in the input line, not the output we want.  this is why the first list is skipped.
+			if { $output_level > 100 } { send_user -- $expect_out(buffer); };
+			if { $output_level > 110 } { send_user -- "pid:$expect_out(spawn_id)\n"; };
+			if { [dict exists $first_line_spawn_ids_dict $expect_out(spawn_id)] } {
+				#skip the first line from this pid
+				if { $output_level > 100 } { send_user -- "Skipping the first line from this pid\n"; };
+				set first_line_spawn_ids_dict [dict remove $first_line_spawn_ids_dict $expect_out(spawn_id)]; #remove the spawn_id from the sids
+				exp_continue -continue_timer;
+			} else {
+				if { $output_level > 100 } { send_user -- "Not the first line\n"; };
+				set buf $expect_out(buffer);
+				#regsub -all {,} $arg {} arg
+				regsub {\r\n} $buf buf; #remove the nasty '\r\n' so it prints out ok
+				#regsub {\r} $buf buf; #remove the nasty '\r' so it prints out ok
+				#regsub {\n} $buf buf; #remove the nasty '\n' so it prints out ok
+				if { [dict exists $output_buffer_dict $expect_out(spawn_id)] } {
+					if { $output_level > 110 } { send_user -- "dict exists\n"; };
+					set temp_list [dict get $output_buffer_dict $expect_out(spawn_id)]; #pull in the list from the dictionary
+					if { $output_level > 110 } { send_user -- "temp_list:$temp_list\n"; };
+				} else {
+					if { $output_level > 110 } { send_user -- "dict does NOT exist\n"; };
+				}
+				lappend temp_list $buf; #add the buf to the list
+				if { $output_level > 110 } { send_user -- "temp_list:$temp_list\n"; };
+				set output_buffer_dict [dict replace $output_buffer_dict $expect_out(spawn_id) $temp_list]; #save the list back into the dict
+				if { $output_level > 110 } { send_user -- "output_buffer_dict updated\n"; };
+				if { $output_level > 110 } { send_user -- "updated:[dict get $output_buffer_dict $expect_out(spawn_id)]\n"; };
+				if { $output_level > 100 } { send_user -- "keys:[dict keys $output_buffer_dict]\n"; };
+				exp_continue -continue_timer;
+			}
+		}
+		-i [dict keys $spawn_ids_dict] -re $prompt {
+			#found prompt
+			if { $output_level > 100 } { send_user -- "Found prompt $expect_out(spawn_id)\n";};
+			if { $output_level > 110 } { send_user -- "pid:$expect_out(spawn_id)"; };
+			if { $output_level > 110 } { send_user -- "keys:[dict keys $spawn_ids_dict]\n"; };
+			set spawn_ids_dict [dict remove $spawn_ids_dict $expect_out(spawn_id)]; #remove the spawn_id from the sids
+			if { $output_level > 100 } { send_user -- "dict size:[dict size $spawn_ids_dict]\n";};
+			if { [dict size $spawn_ids_dict] } { exp_continue; }
+		}
+		eof -i [dict keys $spawn_ids_dict] {
+			#process closed
+			if { $output_level > 100 } { send_user -- "EOF detected: $expect_out(spawn_id)\n"; };
+			set spawn_ids_dict [dict remove $spawn_ids_dict $expect_out(spawn_id)]; #remove the spawn_id from the sids
+			set copy_of_spawn_ids_dict [dict remove $copy_of_spawn_ids_dict $expect_out(spawn_id)]; #remove the spawn_id from the sids
+			if { [dict size $spawn_ids_dict] } { exp_continue; }
+		}
+		timeout {
+			if { $timeout_count < $timeout_multiplier } {
+				if { $output_level > 100 } { send_user -- "Timeout! timeout_count:$timeout_count of $timeout_multiplier times\n";};
+				if { $output_level > 100 } { send_user -- "dict size:[dict size $spawn_ids_dict]\n";};
+				set timeout_count [expr {$timeout_count + 1}];
+				exp_continue;
+			} else {
+				if { $output_level > 100 } { send_user -- "Timed out $timeout_multiplier times!!  Something really bad just happened...\n";};
+			exit;
+			}
+		}
+	}
+	if { $output_level > 10 } { send_user -- "Expect end\n";};
+	if { $output_level > 10 } { send_user -- "end:[dict keys $output_buffer_dict]\n"; };
+	return [dict get $output_buffer_dict];
+}
+
