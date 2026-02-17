@@ -36,7 +36,8 @@ for script in "${SCRIPTS[@]}"; do
     echo -n "Checking $script ... "
     # Run shellcheck without any disabled checks.
     # If a script fails, we fix the code - we do NOT disable shellcheck warnings.
-    if shellcheck -x "$script" > /dev/null 2>&1; then
+    # Use --source-path=SCRIPTDIR to find sourced files relative to the script's directory.
+    if shellcheck --external-sources --source-path=SCRIPTDIR "$script" > /dev/null 2>&1; then
         echo "PASS"
         PASS=$((PASS + 1))
     else
@@ -56,10 +57,10 @@ if [[ $FAIL -gt 0 ]]; then
     echo "Failed scripts:"
     for script in "${FAILED_SCRIPTS[@]}"; do
         echo "  - $script"
-        echo "    $(shellcheck -x "$script" 2>&1 | head -5)"
+        echo "    $(shellcheck --external-sources --source-path=SCRIPTDIR "$script" 2>&1 | head -5)"
     done
     echo ""
-    echo "Run 'shellcheck -x <script>' to see detailed errors"
+    echo "Run 'shellcheck --external-sources --source-path=SCRIPTDIR <script>' to see detailed errors"
 fi
 
 exit "$FAIL"

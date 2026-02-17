@@ -2,7 +2,7 @@
 #
 # Tracks active SSH sessions and their state.
 
-package require Tcl 8.6
+package require Tcl 8.6-
 
 namespace eval ::mcp::session {
     # Session storage: session_id -> session_data dict

@@ -3,7 +3,7 @@
 #
 # Usage: ./server.tcl [--port PORT] [--bind ADDR] [--debug LEVEL]
 
-package require Tcl 8.6
+package require Tcl 8.6-
 package require Expect
 
 # Get script directory

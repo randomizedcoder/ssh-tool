@@ -2,7 +2,7 @@
 #
 # Shared utility functions used across modules.
 
-package require Tcl 8.6
+package require Tcl 8.6-
 
 namespace eval ::mcp::util {
     # Line 10-20: Generate unique IDs

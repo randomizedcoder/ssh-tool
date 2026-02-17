@@ -3,7 +3,7 @@
 # Simple HTTP/1.1 server using Tcl's native socket support.
 # No tcllib dependency.
 
-package require Tcl 8.6
+package require Tcl 8.6-
 
 namespace eval ::mcp::http {
     variable server_socket ""
@@ -93,7 +93,7 @@ namespace eval ::mcp::http {
     # Accept new connection
     proc _accept {chan addr port} {
         fconfigure $chan -translation binary -buffering full -blocking 0
-        fileevent $chan readable [list [namespace code _handle_readable] $chan $addr]
+        fileevent $chan readable [namespace code [list _handle_readable $chan $addr]]
     }
 
     # Handle readable event

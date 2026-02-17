@@ -1,0 +1,856 @@
+#!/usr/bin/env tclsh
+# test_security_network.test - Security tests for network commands
+#
+# Reference: DESIGN_NETWORK_COMMANDS.md
+# These tests verify that network inspection commands are allowed
+# and network modification commands are blocked.
+
+package require tcltest
+namespace import ::tcltest::*
+
+# Source dependencies
+set script_dir [file dirname [info script]]
+source [file join $script_dir "../../lib/util.tcl"]
+source [file join $script_dir "../../lib/log.tcl"]
+source [file join $script_dir "../../lib/security.tcl"]
+
+# Suppress log output
+::mcp::log::init ERROR [open /dev/null w]
+
+#===========================================================================
+# IP COMMAND - ALLOWED PATTERNS
+#===========================================================================
+
+test ip-allow-1.0 {ip link show is allowed} -body {
+    ::mcp::security::validate_command "ip link show"
+} -result 1
+
+test ip-allow-1.1 {ip -j addr show is allowed} -body {
+    ::mcp::security::validate_command "ip -j addr show"
+} -result 1
+
+test ip-allow-1.2 {ip -json link show is allowed} -body {
+    ::mcp::security::validate_command "ip -json link show"
+} -result 1
+
+test ip-allow-1.3 {ip -j -d link show is allowed} -body {
+    ::mcp::security::validate_command "ip -j -d link show"
+} -result 1
+
+test ip-allow-1.4 {ip -j -s link show is allowed} -body {
+    ::mcp::security::validate_command "ip -j -s link show"
+} -result 1
+
+test ip-allow-1.5 {ip route show is allowed} -body {
+    ::mcp::security::validate_command "ip route show"
+} -result 1
+
+test ip-allow-1.6 {ip -j route show is allowed} -body {
+    ::mcp::security::validate_command "ip -j route show"
+} -result 1
+
+test ip-allow-1.7 {ip rule show is allowed} -body {
+    ::mcp::security::validate_command "ip rule show"
+} -result 1
+
+test ip-allow-1.8 {ip neigh show is allowed} -body {
+    ::mcp::security::validate_command "ip neigh show"
+} -result 1
+
+test ip-allow-1.9 {ip tunnel show is allowed} -body {
+    ::mcp::security::validate_command "ip tunnel show"
+} -result 1
+
+test ip-allow-1.10 {ip -4 addr show is allowed} -body {
+    ::mcp::security::validate_command "ip -4 addr show"
+} -result 1
+
+test ip-allow-1.11 {ip -6 route show is allowed} -body {
+    ::mcp::security::validate_command "ip -6 route show"
+} -result 1
+
+test ip-allow-1.12 {ip netns list is allowed} -body {
+    ::mcp::security::validate_command "ip netns list"
+} -result 1
+
+test ip-allow-1.13 {ip -n testns link show is allowed} -body {
+    ::mcp::security::validate_command "ip -n testns link show"
+} -result 1
+
+test ip-allow-1.14 {ip address show is allowed} -body {
+    ::mcp::security::validate_command "ip address show"
+} -result 1
+
+test ip-allow-1.15 {ip neighbor show is allowed} -body {
+    ::mcp::security::validate_command "ip neighbor show"
+} -result 1
+
+test ip-allow-1.16 {ip -details link show is allowed} -body {
+    ::mcp::security::validate_command "ip -details link show"
+} -result 1
+
+test ip-allow-1.17 {ip -statistics link show is allowed} -body {
+    ::mcp::security::validate_command "ip -statistics link show"
+} -result 1
+
+test ip-allow-1.18 {ip maddr show is allowed} -body {
+    ::mcp::security::validate_command "ip maddr show"
+} -result 1
+
+test ip-allow-1.19 {ip vrf show is allowed} -body {
+    ::mcp::security::validate_command "ip vrf show"
+} -result 1
+
+test ip-allow-1.20 {ip link list is allowed} -body {
+    ::mcp::security::validate_command "ip link list"
+} -result 1
+
+test ip-allow-1.21 {ip netns identify is allowed} -body {
+    ::mcp::security::validate_command "ip netns identify"
+} -result 1
+
+#===========================================================================
+# IP COMMAND - BLOCKED PATTERNS
+#===========================================================================
+
+test ip-block-2.0 {ip link set is blocked} -body {
+    ::mcp::security::validate_command "ip link set eth0 down"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test ip-block-2.1 {ip addr add is blocked} -body {
+    ::mcp::security::validate_command "ip addr add 10.0.0.1/24 dev eth0"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test ip-block-2.2 {ip route add is blocked} -body {
+    ::mcp::security::validate_command "ip route add default via 10.0.0.1"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test ip-block-2.3 {ip route del is blocked} -body {
+    ::mcp::security::validate_command "ip route del default"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test ip-block-2.4 {ip neigh add is blocked} -body {
+    ::mcp::security::validate_command "ip neigh add 10.0.0.1 lladdr 00:11:22:33:44:55 dev eth0"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test ip-block-2.5 {ip link change is blocked} -body {
+    ::mcp::security::validate_command "ip link change eth0 name eth1"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test ip-block-2.6 {ip addr flush is blocked} -body {
+    ::mcp::security::validate_command "ip addr flush dev eth0"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test ip-block-2.7 {ip netns add is blocked} -body {
+    ::mcp::security::validate_command "ip netns add testns"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test ip-block-2.8 {ip route replace is blocked} -body {
+    ::mcp::security::validate_command "ip route replace default via 10.0.0.1"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test ip-block-2.9 {ip addr delete is blocked} -body {
+    ::mcp::security::validate_command "ip addr delete 10.0.0.1/24 dev eth0"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test ip-block-2.10 {ip route append is blocked} -body {
+    ::mcp::security::validate_command "ip route append 10.0.0.0/8 via 10.0.0.1"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+#===========================================================================
+# ETHTOOL - ALLOWED PATTERNS (read-only flags only)
+#===========================================================================
+
+test ethtool-allow-3.0 {ethtool eth0 is allowed} -body {
+    ::mcp::security::validate_command "ethtool eth0"
+} -result 1
+
+test ethtool-allow-3.1 {ethtool -S eth0 is allowed} -body {
+    ::mcp::security::validate_command "ethtool -S eth0"
+} -result 1
+
+test ethtool-allow-3.2 {ethtool -i eth0 is allowed} -body {
+    ::mcp::security::validate_command "ethtool -i eth0"
+} -result 1
+
+test ethtool-allow-3.3 {ethtool -k eth0 is allowed} -body {
+    ::mcp::security::validate_command "ethtool -k eth0"
+} -result 1
+
+test ethtool-allow-3.4 {ethtool -g eth0 is allowed} -body {
+    ::mcp::security::validate_command "ethtool -g eth0"
+} -result 1
+
+test ethtool-allow-3.5 {ethtool -a eth0 is allowed} -body {
+    ::mcp::security::validate_command "ethtool -a eth0"
+} -result 1
+
+test ethtool-allow-3.6 {ethtool -c eth0 is allowed} -body {
+    ::mcp::security::validate_command "ethtool -c eth0"
+} -result 1
+
+test ethtool-allow-3.7 {ethtool -m eth0 is allowed} -body {
+    ::mcp::security::validate_command "ethtool -m eth0"
+} -result 1
+
+test ethtool-allow-3.8 {ethtool -n eth0 is allowed} -body {
+    ::mcp::security::validate_command "ethtool -n eth0"
+} -result 1
+
+test ethtool-allow-3.9 {ethtool -T eth0 is allowed} -body {
+    ::mcp::security::validate_command "ethtool -T eth0"
+} -result 1
+
+test ethtool-allow-3.10 {ethtool with @ notation is allowed} -body {
+    ::mcp::security::validate_command "ethtool eth0@if2"
+} -result 1
+
+#===========================================================================
+# ETHTOOL - BLOCKED PATTERNS (dangerous/write flags)
+#===========================================================================
+
+test ethtool-block-4.0 {ethtool -E (EEPROM write) is blocked} -body {
+    ::mcp::security::validate_command "ethtool -E eth0 magic 0x1234 offset 0 value 0xff"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test ethtool-block-4.1 {ethtool -e (EEPROM read) is blocked} -body {
+    ::mcp::security::validate_command "ethtool -e eth0"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test ethtool-block-4.2 {ethtool -f (firmware flash) is blocked} -body {
+    ::mcp::security::validate_command "ethtool -f eth0 firmware.bin"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test ethtool-block-4.3 {ethtool --flash is blocked} -body {
+    ::mcp::security::validate_command "ethtool --flash eth0 firmware.bin"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test ethtool-block-4.4 {ethtool -W (wake-on-lan set) is blocked} -body {
+    ::mcp::security::validate_command "ethtool -W eth0 1"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test ethtool-block-4.5 {ethtool -K (offload set) is blocked} -body {
+    ::mcp::security::validate_command "ethtool -K eth0 rx off"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test ethtool-block-4.6 {ethtool -s (speed set) is blocked} -body {
+    ::mcp::security::validate_command "ethtool -s eth0 speed 100"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test ethtool-block-4.7 {ethtool -A (pause set) is blocked} -body {
+    ::mcp::security::validate_command "ethtool -A eth0 tx on"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test ethtool-block-4.8 {ethtool -C (coalesce set) is blocked} -body {
+    ::mcp::security::validate_command "ethtool -C eth0 rx-usecs 100"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test ethtool-block-4.9 {ethtool -G (ring set) is blocked} -body {
+    ::mcp::security::validate_command "ethtool -G eth0 rx 512"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test ethtool-block-4.10 {ethtool -L (channel set) is blocked} -body {
+    ::mcp::security::validate_command "ethtool -L eth0 combined 4"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test ethtool-block-4.11 {ethtool -p (blink) is blocked} -body {
+    ::mcp::security::validate_command "ethtool -p eth0"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test ethtool-block-4.12 {ethtool -P (permanent addr) is blocked} -body {
+    ::mcp::security::validate_command "ethtool -P eth0"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test ethtool-block-4.13 {ethtool -u (firmware dump) is blocked} -body {
+    ::mcp::security::validate_command "ethtool -u eth0"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test ethtool-block-4.14 {ethtool -U (filter rule) is blocked} -body {
+    ::mcp::security::validate_command "ethtool -U eth0 flow-type tcp4"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test ethtool-block-4.15 {ethtool --change is blocked} -body {
+    ::mcp::security::validate_command "ethtool --change eth0 speed 1000"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test ethtool-block-4.16 {ethtool --set is blocked} -body {
+    ::mcp::security::validate_command "ethtool --set-priv-flags eth0 foo on"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test ethtool-block-4.17 {ethtool --reset is blocked} -body {
+    ::mcp::security::validate_command "ethtool --reset eth0 all"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+#===========================================================================
+# TC COMMAND - ALLOWED PATTERNS
+#===========================================================================
+
+test tc-allow-5.0 {tc qdisc show is allowed} -body {
+    ::mcp::security::validate_command "tc qdisc show"
+} -result 1
+
+test tc-allow-5.1 {tc -j qdisc show is allowed} -body {
+    ::mcp::security::validate_command "tc -j qdisc show"
+} -result 1
+
+test tc-allow-5.2 {tc class show dev eth0 is allowed} -body {
+    ::mcp::security::validate_command "tc class show dev eth0"
+} -result 1
+
+test tc-allow-5.3 {tc filter show is allowed} -body {
+    ::mcp::security::validate_command "tc filter show"
+} -result 1
+
+test tc-allow-5.4 {tc -s qdisc show is allowed} -body {
+    ::mcp::security::validate_command "tc -s qdisc show"
+} -result 1
+
+test tc-allow-5.5 {tc action show is allowed} -body {
+    ::mcp::security::validate_command "tc action show"
+} -result 1
+
+#===========================================================================
+# TC COMMAND - BLOCKED PATTERNS
+#===========================================================================
+
+test tc-block-6.0 {tc qdisc add is blocked} -body {
+    ::mcp::security::validate_command "tc qdisc add dev eth0 root tbf rate 1mbit"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test tc-block-6.1 {tc qdisc del is blocked} -body {
+    ::mcp::security::validate_command "tc qdisc del dev eth0 root"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test tc-block-6.2 {tc qdisc change is blocked} -body {
+    ::mcp::security::validate_command "tc qdisc change dev eth0 root tbf rate 2mbit"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test tc-block-6.3 {tc filter add is blocked} -body {
+    ::mcp::security::validate_command "tc filter add dev eth0 parent 1: bpf obj filter.o"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test tc-block-6.4 {tc qdisc replace is blocked} -body {
+    ::mcp::security::validate_command "tc qdisc replace dev eth0 root fq_codel"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+#===========================================================================
+# NFT COMMAND - ALLOWED PATTERNS
+#===========================================================================
+
+test nft-allow-7.0 {nft list ruleset is allowed} -body {
+    ::mcp::security::validate_command "nft list ruleset"
+} -result 1
+
+test nft-allow-7.1 {nft -j list tables is allowed} -body {
+    ::mcp::security::validate_command "nft -j list tables"
+} -result 1
+
+test nft-allow-7.2 {nft list table inet filter is allowed} -body {
+    ::mcp::security::validate_command "nft list table inet filter"
+} -result 1
+
+test nft-allow-7.3 {nft list chain is allowed} -body {
+    ::mcp::security::validate_command "nft list chain inet filter input"
+} -result 1
+
+test nft-allow-7.4 {nft list set is allowed} -body {
+    ::mcp::security::validate_command "nft list set inet filter blacklist"
+} -result 1
+
+test nft-allow-7.5 {nft list map is allowed} -body {
+    ::mcp::security::validate_command "nft list map inet filter portmap"
+} -result 1
+
+#===========================================================================
+# NFT COMMAND - BLOCKED PATTERNS
+#===========================================================================
+
+test nft-block-8.0 {nft add is blocked} -body {
+    ::mcp::security::validate_command "nft add table inet filter"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test nft-block-8.1 {nft delete is blocked} -body {
+    ::mcp::security::validate_command "nft delete chain inet filter input"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test nft-block-8.2 {nft flush is blocked} -body {
+    ::mcp::security::validate_command "nft flush ruleset"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test nft-block-8.3 {nft insert is blocked} -body {
+    ::mcp::security::validate_command "nft insert rule inet filter input accept"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test nft-block-8.4 {nft replace is blocked} -body {
+    ::mcp::security::validate_command "nft replace rule inet filter input handle 1 drop"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test nft-block-8.5 {nft destroy is blocked} -body {
+    ::mcp::security::validate_command "nft destroy table inet filter"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test nft-block-8.6 {nft create is blocked} -body {
+    ::mcp::security::validate_command "nft create table inet filter"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+#===========================================================================
+# IPTABLES - ALLOWED PATTERNS
+#===========================================================================
+
+test iptables-allow-9.0 {iptables -L -n is allowed} -body {
+    ::mcp::security::validate_command "iptables -L -n"
+} -result 1
+
+test iptables-allow-9.1 {iptables -t nat -L -n -v is allowed} -body {
+    ::mcp::security::validate_command "iptables -t nat -L -n -v"
+} -result 1
+
+test iptables-allow-9.2 {iptables -S is allowed} -body {
+    ::mcp::security::validate_command "iptables -S"
+} -result 1
+
+test iptables-allow-9.3 {ip6tables -L -n is allowed} -body {
+    ::mcp::security::validate_command "ip6tables -L -n"
+} -result 1
+
+test iptables-allow-9.4 {iptables -t mangle -L -n is allowed} -body {
+    ::mcp::security::validate_command "iptables -t mangle -L -n"
+} -result 1
+
+test iptables-allow-9.5 {iptables -t raw -L -n is allowed} -body {
+    ::mcp::security::validate_command "iptables -t raw -L -n"
+} -result 1
+
+test iptables-allow-9.6 {iptables -t security -L -n is allowed} -body {
+    ::mcp::security::validate_command "iptables -t security -L -n"
+} -result 1
+
+#===========================================================================
+# IPTABLES - BLOCKED PATTERNS
+#===========================================================================
+
+test iptables-block-10.0 {iptables -A is blocked} -body {
+    ::mcp::security::validate_command "iptables -A INPUT -j DROP"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test iptables-block-10.1 {iptables -D is blocked} -body {
+    ::mcp::security::validate_command "iptables -D INPUT 1"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test iptables-block-10.2 {iptables -F is blocked} -body {
+    ::mcp::security::validate_command "iptables -F"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test iptables-block-10.3 {iptables -I is blocked} -body {
+    ::mcp::security::validate_command "iptables -I INPUT -j ACCEPT"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test iptables-block-10.4 {iptables -R is blocked} -body {
+    ::mcp::security::validate_command "iptables -R INPUT 1 -j ACCEPT"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test iptables-block-10.5 {iptables --append is blocked} -body {
+    ::mcp::security::validate_command "iptables --append INPUT -j DROP"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test iptables-block-10.6 {iptables --delete is blocked} -body {
+    ::mcp::security::validate_command "iptables --delete INPUT 1"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test iptables-block-10.7 {iptables --flush is blocked} -body {
+    ::mcp::security::validate_command "iptables --flush"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test iptables-block-10.8 {ip6tables -A is blocked} -body {
+    ::mcp::security::validate_command "ip6tables -A INPUT -j DROP"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+#===========================================================================
+# PING - ALLOWED PATTERNS (strict count limit)
+#===========================================================================
+
+test ping-allow-11.0 {ping -c 1 is allowed} -body {
+    ::mcp::security::validate_command "ping -c 1 example.com"
+} -result 1
+
+test ping-allow-11.1 {ping -c 3 is allowed} -body {
+    ::mcp::security::validate_command "ping -c 3 example.com"
+} -result 1
+
+test ping-allow-11.2 {ping -c 5 is allowed (max)} -body {
+    ::mcp::security::validate_command "ping -c 5 example.com"
+} -result 1
+
+test ping-allow-11.3 {ping6 -c 3 is allowed} -body {
+    ::mcp::security::validate_command "ping6 -c 3 example.com"
+} -result 1
+
+test ping-allow-11.4 {ping with IP address allowed} -body {
+    ::mcp::security::validate_command "ping -c 3 8.8.8.8"
+} -result 1
+
+#===========================================================================
+# PING - BLOCKED PATTERNS
+#===========================================================================
+
+test ping-block-12.0 {ping -c 6 is blocked (over limit)} -body {
+    ::mcp::security::validate_command "ping -c 6 example.com"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test ping-block-12.1 {ping -c 100 is blocked} -body {
+    ::mcp::security::validate_command "ping -c 100 example.com"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test ping-block-12.2 {ping -f (flood) is blocked} -body {
+    ::mcp::security::validate_command "ping -f example.com"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test ping-block-12.3 {ping without -c is blocked} -body {
+    ::mcp::security::validate_command "ping example.com"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test ping-block-12.4 {ping -i 0 (no delay) is blocked} -body {
+    ::mcp::security::validate_command "ping -c 1 -i 0 example.com"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test ping-block-12.5 {ping -A (adaptive) is blocked} -body {
+    ::mcp::security::validate_command "ping -c 1 -A example.com"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+#===========================================================================
+# TRACEROUTE - ALLOWED PATTERNS (strict hop limit)
+#===========================================================================
+
+test traceroute-allow-13.0 {traceroute -m 10 is allowed} -body {
+    ::mcp::security::validate_command "traceroute -m 10 example.com"
+} -result 1
+
+test traceroute-allow-13.1 {traceroute -m 15 is allowed (max)} -body {
+    ::mcp::security::validate_command "traceroute -m 15 example.com"
+} -result 1
+
+test traceroute-allow-13.2 {traceroute -m 1 is allowed} -body {
+    ::mcp::security::validate_command "traceroute -m 1 example.com"
+} -result 1
+
+test traceroute-allow-13.3 {traceroute6 -m 10 is allowed} -body {
+    ::mcp::security::validate_command "traceroute6 -m 10 example.com"
+} -result 1
+
+#===========================================================================
+# TRACEROUTE - BLOCKED PATTERNS
+#===========================================================================
+
+test traceroute-block-14.0 {traceroute -m 16 is blocked} -body {
+    ::mcp::security::validate_command "traceroute -m 16 example.com"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test traceroute-block-14.1 {traceroute without -m is blocked} -body {
+    ::mcp::security::validate_command "traceroute example.com"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test traceroute-block-14.2 {traceroute -g (source route) is blocked} -body {
+    ::mcp::security::validate_command "traceroute -g 10.0.0.1 example.com"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test traceroute-block-14.3 {traceroute -s (source addr) is blocked} -body {
+    ::mcp::security::validate_command "traceroute -s 10.0.0.1 example.com"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test traceroute-block-14.4 {traceroute -i (interface) is blocked} -body {
+    ::mcp::security::validate_command "traceroute -i eth0 example.com"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+#===========================================================================
+# DNS - ALLOWED PATTERNS
+#===========================================================================
+
+test dns-allow-15.0 {dig domain is allowed} -body {
+    ::mcp::security::validate_command "dig example.com"
+} -result 1
+
+test dns-allow-15.1 {dig +short domain is allowed} -body {
+    ::mcp::security::validate_command "dig +short example.com"
+} -result 1
+
+test dns-allow-15.2 {nslookup domain is allowed} -body {
+    ::mcp::security::validate_command "nslookup example.com"
+} -result 1
+
+test dns-allow-15.3 {host domain is allowed} -body {
+    ::mcp::security::validate_command "host example.com"
+} -result 1
+
+test dns-allow-15.4 {dig subdomain allowed} -body {
+    ::mcp::security::validate_command "dig www.example.com"
+} -result 1
+
+test dns-allow-15.5 {dig with underscore allowed} -body {
+    ::mcp::security::validate_command "dig _dmarc.example.com"
+} -result 1
+
+test dns-allow-15.6 {dig with hyphen allowed} -body {
+    ::mcp::security::validate_command "dig my-server.example.com"
+} -result 1
+
+#===========================================================================
+# DNS - BLOCKED PATTERNS
+#===========================================================================
+
+test dns-block-16.0 {dig AXFR is blocked} -body {
+    ::mcp::security::validate_command "dig example.com AXFR"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test dns-block-16.1 {dig -x (reverse) is blocked} -body {
+    ::mcp::security::validate_command "dig -x 10.0.0.1"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test dns-block-16.2 {dig +trace is blocked} -body {
+    ::mcp::security::validate_command "dig +trace example.com"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+#===========================================================================
+# MTR - ALLOWED PATTERNS
+#===========================================================================
+
+test mtr-allow-17.0 {mtr --report -c 3 is allowed} -body {
+    ::mcp::security::validate_command "mtr --report -c 3 example.com"
+} -result 1
+
+test mtr-allow-17.1 {mtr -c 5 --report is allowed} -body {
+    ::mcp::security::validate_command "mtr -c 5 --report example.com"
+} -result 1
+
+test mtr-allow-17.2 {mtr --report -c 1 is allowed} -body {
+    ::mcp::security::validate_command "mtr --report -c 1 example.com"
+} -result 1
+
+#===========================================================================
+# MTR - BLOCKED PATTERNS
+#===========================================================================
+
+test mtr-block-18.0 {mtr without --report is blocked} -body {
+    ::mcp::security::validate_command "mtr example.com"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test mtr-block-18.1 {mtr -c 6 is blocked (over limit)} -body {
+    ::mcp::security::validate_command "mtr --report -c 6 example.com"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test mtr-block-18.2 {mtr -c 10 is blocked} -body {
+    ::mcp::security::validate_command "mtr --report -c 10 example.com"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+#===========================================================================
+# BRIDGE COMMAND - ALLOWED PATTERNS
+#===========================================================================
+
+test bridge-allow-19.0 {bridge link show is allowed} -body {
+    ::mcp::security::validate_command "bridge link show"
+} -result 1
+
+test bridge-allow-19.1 {bridge -j fdb show is allowed} -body {
+    ::mcp::security::validate_command "bridge -j fdb show"
+} -result 1
+
+test bridge-allow-19.2 {bridge vlan show is allowed} -body {
+    ::mcp::security::validate_command "bridge vlan show"
+} -result 1
+
+test bridge-allow-19.3 {bridge mdb show is allowed} -body {
+    ::mcp::security::validate_command "bridge mdb show"
+} -result 1
+
+#===========================================================================
+# CONNTRACK - ALLOWED PATTERNS
+#===========================================================================
+
+test conntrack-allow-20.0 {conntrack -L is allowed} -body {
+    ::mcp::security::validate_command "conntrack -L"
+} -result 1
+
+#===========================================================================
+# SYSCTL - ALLOWED PATTERNS
+#===========================================================================
+
+test sysctl-allow-21.0 {sysctl net.ipv4.ip_forward is allowed} -body {
+    ::mcp::security::validate_command "sysctl net.ipv4.ip_forward"
+} -result 1
+
+test sysctl-allow-21.1 {sysctl -a net. is allowed} -body {
+    ::mcp::security::validate_command "sysctl -a net.ipv4"
+} -result 1
+
+test sysctl-allow-21.2 {sysctl net.ipv6 is allowed} -body {
+    ::mcp::security::validate_command "sysctl net.ipv6.conf.all.forwarding"
+} -result 1
+
+#===========================================================================
+# BYPASS ATTEMPTS - MUST BE BLOCKED
+#===========================================================================
+
+test bypass-22.0 {ip show then set via semicolon blocked} -body {
+    ::mcp::security::validate_command "ip link show; ip link set eth0 down"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test bypass-22.1 {ip show with embedded set blocked} -body {
+    ::mcp::security::validate_command "ip link show && ip link set eth0 down"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test bypass-22.2 {ethtool stats then flash blocked} -body {
+    ::mcp::security::validate_command "ethtool -S eth0; ethtool --flash eth0 fw.bin"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test bypass-22.3 {command substitution in ip} -body {
+    ::mcp::security::validate_command "ip link show \$(rm -rf /)"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test bypass-22.4 {backtick injection} -body {
+    ::mcp::security::validate_command "ip link show `id`"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test bypass-22.5 {pipe to shell} -body {
+    ::mcp::security::validate_command "ip link show | bash"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test bypass-22.6 {redirect output} -body {
+    ::mcp::security::validate_command "ip link show > /tmp/out"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test bypass-22.7 {redirect input} -body {
+    ::mcp::security::validate_command "ip link show < /etc/passwd"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+#===========================================================================
+# SS COMMAND (already in allowlist via netstat pattern)
+#===========================================================================
+
+test ss-allow-23.0 {ss -tlnp is allowed} -body {
+    ::mcp::security::validate_command "ss -tlnp"
+} -result 1
+
+test ss-allow-23.1 {ss -tanp is allowed} -body {
+    ::mcp::security::validate_command "ss -tanp"
+} -result 1
+
+#===========================================================================
+# EXISTING COMMANDS STILL WORK
+#===========================================================================
+
+test existing-24.0 {ls still works} -body {
+    ::mcp::security::validate_command "ls"
+} -result 1
+
+test existing-24.1 {netstat still works} -body {
+    ::mcp::security::validate_command "netstat -tlnp"
+} -result 1
+
+test existing-24.2 {ps still works} -body {
+    ::mcp::security::validate_command "ps"
+} -result 1
+
+test existing-24.3 {hostname still works} -body {
+    ::mcp::security::validate_command "hostname"
+} -result 1
+
+#===========================================================================
+# PRIVACY FILTER TESTS
+#===========================================================================
+
+test privacy-30.0 {none mode returns unchanged} -body {
+    set input "src=10.1.2.3 dst=8.8.8.8"
+    ::mcp::security::apply_privacy_filter $input "none"
+} -result "src=10.1.2.3 dst=8.8.8.8"
+
+test privacy-30.1 {standard masks internal 10.x IPs} -body {
+    set input "src=10.1.2.3 dst=8.8.8.8"
+    set output [::mcp::security::apply_privacy_filter $input "standard"]
+    expr {[string match "*10.x.x.x*" $output] && [string match "*8.8.8.8*" $output]}
+} -result 1
+
+test privacy-30.2 {standard masks 172.16.x.x} -body {
+    set input "172.16.5.10"
+    set output [::mcp::security::apply_privacy_filter $input "standard"]
+    string match "*172.16.x.x*" $output
+} -result 1
+
+test privacy-30.3 {standard masks 192.168.x.x} -body {
+    set input "192.168.1.100"
+    set output [::mcp::security::apply_privacy_filter $input "standard"]
+    string match "*192.168.x.x*" $output
+} -result 1
+
+test privacy-30.4 {standard masks ephemeral ports} -body {
+    set input "10.1.2.3:54321 8.8.8.8:443"
+    set output [::mcp::security::apply_privacy_filter $input "standard"]
+    expr {[string match "*:xxxxx*" $output] && [string match "*:443*" $output]}
+} -result 1
+
+test privacy-30.5 {standard masks MAC addresses (keeps OUI)} -body {
+    set input "52:54:00:12:34:56"
+    set output [::mcp::security::apply_privacy_filter $input "standard"]
+    string match "52:54:00:xx:xx:xx" $output
+} -result 1
+
+test privacy-30.6 {strict masks all IPs} -body {
+    set input "src=10.1.2.3 dst=8.8.8.8"
+    set output [::mcp::security::apply_privacy_filter $input "strict"]
+    # Both should be masked to x.x.x.x
+    expr {[string first "x.x.x.x" $output] >= 0}
+} -result 1
+
+test privacy-30.7 {strict preserves loopback} -body {
+    set input "127.0.0.1:8080"
+    set output [::mcp::security::apply_privacy_filter $input "strict"]
+    string match "*127.0.0.1*" $output
+} -result 1
+
+test privacy-30.8 {strict masks MAC addresses completely} -body {
+    set input "52:54:00:12:34:56"
+    set output [::mcp::security::apply_privacy_filter $input "strict"]
+    string match "xx:xx:xx:xx:xx:xx" $output
+} -result 1
+
+test privacy-30.9 {standard preserves public IPs} -body {
+    set input "8.8.8.8 1.1.1.1"
+    set output [::mcp::security::apply_privacy_filter $input "standard"]
+    expr {[string match "*8.8.8.8*" $output] && [string match "*1.1.1.1*" $output]}
+} -result 1
+
+test privacy-30.10 {strict masks all ports} -body {
+    set input "10.1.2.3:80 10.1.2.3:443"
+    set output [::mcp::security::apply_privacy_filter $input "strict"]
+    expr {[string first ":80" $output] < 0 && [string first ":443" $output] < 0}
+} -result 1
+
+#===========================================================================
+# PHASE 2: CONNECTIVITY EDGE CASES
+#===========================================================================
+
+test ping-edge-25.0 {ping -c1 (no space) blocked} -body {
+    # Pattern requires space after -c
+    ::mcp::security::validate_command "ping -c1 8.8.8.8"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test traceroute-edge-26.0 {traceroute -m10 (no space) blocked} -body {
+    ::mcp::security::validate_command "traceroute -m10 google.com"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test dns-edge-27.0 {host with IP blocked (reverse lookup)} -body {
+    ::mcp::security::validate_command "host 8.8.8.8"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test dns-edge-27.1 {host with IPv6 still blocked} -body {
+    # IPv6 addresses shouldn't be allowed either
+    ::mcp::security::validate_command "host 2001:4860:4860::8888"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+test dns-edge-27.2 {nslookup with IP blocked} -body {
+    ::mcp::security::validate_command "nslookup 8.8.8.8"
+} -returnCodes error -match glob -result "*SECURITY*"
+
+#===========================================================================
+# CLEANUP
+#===========================================================================
+
+cleanupTests

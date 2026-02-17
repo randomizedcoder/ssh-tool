@@ -1,0 +1,267 @@
+#!/usr/bin/env tclsh
+# test_tools_network.test - Tests for network tools
+#
+# These tests verify tool registration, input validation,
+# and helper functions without requiring SSH connections.
+
+package require tcltest
+namespace import ::tcltest::*
+
+set script_dir [file dirname [info script]]
+source [file join $script_dir "../../lib/util.tcl"]
+source [file join $script_dir "../../lib/log.tcl"]
+source [file join $script_dir "../../lib/security.tcl"]
+source [file join $script_dir "../../lib/session.tcl"]
+source [file join $script_dir "../../lib/pool.tcl"]
+source [file join $script_dir "../../lib/jsonrpc.tcl"]
+source [file join $script_dir "../../lib/metrics.tcl"]
+source [file join $script_dir "../../lib/mcp_session.tcl"]
+source [file join $script_dir "../../lib/tools.tcl"]
+
+::mcp::log::init ERROR [open /dev/null w]
+
+#===========================================================================
+# TOOL REGISTRATION TESTS
+#===========================================================================
+
+test tools-reg-1.0 {ssh_network_interfaces is registered} -body {
+    set defs [::mcp::tools::get_definitions]
+    set names [list]
+    foreach def $defs {
+        lappend names [dict get $def name]
+    }
+    expr {"ssh_network_interfaces" in $names}
+} -result 1
+
+test tools-reg-1.1 {ssh_network_routes is registered} -body {
+    set defs [::mcp::tools::get_definitions]
+    set names [list]
+    foreach def $defs {
+        lappend names [dict get $def name]
+    }
+    expr {"ssh_network_routes" in $names}
+} -result 1
+
+test tools-reg-1.2 {ssh_network_firewall is registered} -body {
+    set defs [::mcp::tools::get_definitions]
+    set names [list]
+    foreach def $defs {
+        lappend names [dict get $def name]
+    }
+    expr {"ssh_network_firewall" in $names}
+} -result 1
+
+test tools-reg-1.3 {ssh_network_qdisc is registered} -body {
+    set defs [::mcp::tools::get_definitions]
+    set names [list]
+    foreach def $defs {
+        lappend names [dict get $def name]
+    }
+    expr {"ssh_network_qdisc" in $names}
+} -result 1
+
+test tools-reg-1.4 {ssh_network_connectivity is registered} -body {
+    set defs [::mcp::tools::get_definitions]
+    set names [list]
+    foreach def $defs {
+        lappend names [dict get $def name]
+    }
+    expr {"ssh_network_connectivity" in $names}
+} -result 1
+
+test tools-reg-1.5 {ssh_batch_commands is registered} -body {
+    set defs [::mcp::tools::get_definitions]
+    set names [list]
+    foreach def $defs {
+        lappend names [dict get $def name]
+    }
+    expr {"ssh_batch_commands" in $names}
+} -result 1
+
+test tools-reg-1.6 {ssh_network_compare is registered} -body {
+    set defs [::mcp::tools::get_definitions]
+    set names [list]
+    foreach def $defs {
+        lappend names [dict get $def name]
+    }
+    expr {"ssh_network_compare" in $names}
+} -result 1
+
+test tools-reg-1.7 {15 tools registered total} -body {
+    llength [::mcp::tools::get_definitions]
+} -result 15
+
+#===========================================================================
+# INPUT VALIDATION TESTS
+#===========================================================================
+
+test tools-val-2.0 {ssh_network_interfaces requires session_id} -body {
+    set result [::mcp::tools::dispatch "ssh_network_interfaces" {} "mcp_123"]
+    dict get $result isError
+} -result true
+
+test tools-val-2.1 {ssh_network_routes requires session_id} -body {
+    set result [::mcp::tools::dispatch "ssh_network_routes" {} "mcp_123"]
+    dict get $result isError
+} -result true
+
+test tools-val-2.2 {ssh_network_firewall requires session_id} -body {
+    set result [::mcp::tools::dispatch "ssh_network_firewall" {} "mcp_123"]
+    dict get $result isError
+} -result true
+
+test tools-val-2.3 {ssh_network_qdisc requires session_id} -body {
+    set result [::mcp::tools::dispatch "ssh_network_qdisc" {} "mcp_123"]
+    dict get $result isError
+} -result true
+
+test tools-val-2.4 {ssh_network_connectivity requires session_id} -body {
+    set result [::mcp::tools::dispatch "ssh_network_connectivity" {} "mcp_123"]
+    dict get $result isError
+} -result true
+
+test tools-val-2.5 {ssh_network_connectivity requires target} -body {
+    set result [::mcp::tools::dispatch "ssh_network_connectivity" \
+        [dict create session_id "sess_123"] "mcp_123"]
+    dict get $result isError
+} -result true
+
+test tools-val-2.6 {ssh_batch_commands requires session_id} -body {
+    set result [::mcp::tools::dispatch "ssh_batch_commands" {} "mcp_123"]
+    dict get $result isError
+} -result true
+
+test tools-val-2.7 {ssh_batch_commands requires commands array} -body {
+    set result [::mcp::tools::dispatch "ssh_batch_commands" \
+        [dict create session_id "sess_123"] "mcp_123"]
+    dict get $result isError
+} -result true
+
+test tools-val-2.8 {ssh_batch_commands rejects empty commands} -body {
+    set result [::mcp::tools::dispatch "ssh_batch_commands" \
+        [dict create session_id "sess_123" commands {}] "mcp_123"]
+    dict get $result isError
+} -result true
+
+test tools-val-2.9 {ssh_batch_commands rejects >5 commands} -body {
+    set result [::mcp::tools::dispatch "ssh_batch_commands" \
+        [dict create session_id "sess_123" commands {a b c d e f}] "mcp_123"]
+    dict get $result isError
+} -result true
+
+test tools-val-2.10 {ssh_network_compare requires session_id} -body {
+    set result [::mcp::tools::dispatch "ssh_network_compare" {} "mcp_123"]
+    dict get $result isError
+} -result true
+
+#===========================================================================
+# LARGE OUTPUT HANDLER TESTS
+#===========================================================================
+
+test output-3.0 {small output not truncated} -body {
+    set result [::mcp::tools::_handle_large_output "small output" 1000]
+    dict get $result truncated
+} -result false
+
+test output-3.1 {large output truncated} -body {
+    set large [string repeat "x" 1000]
+    set result [::mcp::tools::_handle_large_output $large 500]
+    dict get $result truncated
+} -result true
+
+test output-3.2 {truncated output has correct size} -body {
+    set large [string repeat "x" 1000]
+    set result [::mcp::tools::_handle_large_output $large 500]
+    string length [dict get $result content]
+} -result 500
+
+test output-3.3 {original size preserved} -body {
+    set large [string repeat "x" 1000]
+    set result [::mcp::tools::_handle_large_output $large 500]
+    dict get $result original_size_bytes
+} -result 1000
+
+test output-3.4 {exact size not truncated} -body {
+    set data [string repeat "x" 500]
+    set result [::mcp::tools::_handle_large_output $data 500]
+    dict get $result truncated
+} -result false
+
+test output-3.5 {empty output handled} -body {
+    set result [::mcp::tools::_handle_large_output "" 1000]
+    dict get $result truncated
+} -result false
+
+#===========================================================================
+# TOOL DEFINITION SCHEMA TESTS
+#===========================================================================
+
+test schema-4.0 {ssh_network_interfaces has correct schema} -body {
+    set defs [::mcp::tools::get_definitions]
+    set found 0
+    foreach def $defs {
+        if {[dict get $def name] eq "ssh_network_interfaces"} {
+            set schema [dict get $def inputSchema]
+            set props [dict get $schema properties]
+            set found [expr {[dict exists $props session_id] && [dict exists $props interface]}]
+            break
+        }
+    }
+    set found
+} -result 1
+
+test schema-4.1 {ssh_network_connectivity has target in required} -body {
+    set defs [::mcp::tools::get_definitions]
+    set found 0
+    foreach def $defs {
+        if {[dict get $def name] eq "ssh_network_connectivity"} {
+            set schema [dict get $def inputSchema]
+            set required [dict get $schema required]
+            set found [expr {"target" in $required && "session_id" in $required}]
+            break
+        }
+    }
+    set found
+} -result 1
+
+test schema-4.2 {ssh_batch_commands has commands property} -body {
+    set defs [::mcp::tools::get_definitions]
+    set found 0
+    foreach def $defs {
+        if {[dict get $def name] eq "ssh_batch_commands"} {
+            set schema [dict get $def inputSchema]
+            set props [dict get $schema properties]
+            set found [dict exists $props commands]
+            break
+        }
+    }
+    set found
+} -result 1
+
+#===========================================================================
+# SESSION NOT FOUND TESTS
+#===========================================================================
+
+test session-5.0 {ssh_network_interfaces returns error for unknown session} -body {
+    set result [::mcp::tools::dispatch "ssh_network_interfaces" \
+        [dict create session_id "nonexistent_123"] "mcp_123"]
+    dict get $result isError
+} -result true
+
+test session-5.1 {ssh_network_routes returns error for unknown session} -body {
+    set result [::mcp::tools::dispatch "ssh_network_routes" \
+        [dict create session_id "nonexistent_123"] "mcp_123"]
+    dict get $result isError
+} -result true
+
+test session-5.2 {ssh_batch_commands returns error for unknown session} -body {
+    set result [::mcp::tools::dispatch "ssh_batch_commands" \
+        [dict create session_id "nonexistent_123" commands {ls}] "mcp_123"]
+    dict get $result isError
+} -result true
+
+#===========================================================================
+# CLEANUP
+#===========================================================================
+
+cleanupTests

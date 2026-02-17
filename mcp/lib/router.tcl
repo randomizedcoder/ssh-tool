@@ -2,7 +2,7 @@
 #
 # Routes MCP methods to handlers.
 
-package require Tcl 8.6
+package require Tcl 8.6-
 
 namespace eval ::mcp::router {
     # Method registry: method_name -> handler_proc

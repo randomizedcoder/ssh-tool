@@ -39,11 +39,11 @@ for test in "${TESTS[@]}"; do
     if ./"$test"; then
         echo ""
         echo "PASSED: $test"
-        ((PASS++))
+        ((++PASS))
     else
         echo ""
         echo "FAILED: $test"
-        ((FAIL++))
+        ((++FAIL))
         FAILED_TESTS+=("$test")
     fi
     echo ""

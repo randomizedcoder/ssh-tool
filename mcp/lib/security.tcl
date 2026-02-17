@@ -9,7 +9,7 @@
 # - Path access control
 # - Rate limiting
 
-package require Tcl 8.6
+package require Tcl 8.6-
 
 namespace eval ::mcp::security {
     #=========================================================================
@@ -50,6 +50,36 @@ namespace eval ::mcp::security {
         {^mount$}                 \
         {^lsblk(\s|$)}            \
         {^blkid(\s|$)}            \
+        \
+        \
+        {^ip\s+(-[46])?\s*(-j(son)?)?\s*(-d(etails)?)?\s*(-s(tat(istics)?)?)?\s*(link|addr|address|route|rule|neigh|neighbor|tunnel|maddr|vrf)\s+(show|list)(\s|$)} \
+        {^ip\s+(-j)?\s*netns\s+(list|identify)(\s|$)} \
+        {^ip\s+(-j)?\s*-n\s+[a-zA-Z0-9_-]+\s+(link|addr|route)\s+show(\s|$)} \
+        \
+        {^ethtool\s+(-[Sikgacmn]|-T)?\s*[a-zA-Z0-9@_-]+$} \
+        \
+        {^tc\s+(-[js])?\s*(qdisc|class|filter|action)\s+show(\s|$)} \
+        \
+        {^nft\s+(-j)?\s*list\s+(ruleset|tables|table|chain|set|map)(\s|$)} \
+        \
+        {^ip6?tables\s+(-t\s+(filter|nat|mangle|raw|security)\s+)?-[LnvS]+(\s|$)} \
+        \
+        {^bridge\s+(-j)?\s*(link|fdb|vlan|mdb)\s+show(\s|$)} \
+        \
+        {^conntrack\s+-L(\s|$)} \
+        \
+        {^sysctl\s+(-a\s+)?net\.} \
+        \
+        {^dig\s+(\+short\s+)?[a-zA-Z0-9_][a-zA-Z0-9._-]+$} \
+        {^nslookup\s+[a-zA-Z0-9][a-zA-Z0-9._-]+$} \
+        {^host\s+[a-zA-Z0-9][a-zA-Z0-9._-]+$} \
+        \
+        {^ping6?\s+-c\s+[1-5]\s+[a-zA-Z0-9][a-zA-Z0-9._-]+$} \
+        \
+        {^traceroute6?\s+-m\s+([1-9]|1[0-5])\s+[a-zA-Z0-9][a-zA-Z0-9._-]+$} \
+        \
+        {^mtr\s+--report\s+-c\s+[1-5]\s+[a-zA-Z0-9][a-zA-Z0-9._-]+$} \
+        {^mtr\s+-c\s+[1-5]\s+--report\s+[a-zA-Z0-9][a-zA-Z0-9._-]+$} \
     ]
 
     #=========================================================================
@@ -122,8 +152,6 @@ namespace eval ::mcp::security {
         {\bkill\b}                           \
         {\bpkill\b}                          \
         {\bkillall\b}                        \
-        {\biptables\b}                       \
-        {\bnft\b}                            \
         {\bfirewall-cmd\b}                   \
         {\bufw\b}                            \
         {\bpasswd\b}                         \
@@ -144,6 +172,36 @@ namespace eval ::mcp::security {
         {\bat\b}                             \
         {\bbatch\b}                          \
         {[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]}   \
+        \
+        \
+        {\bip\s+.*\s+(add|del|delete|change|replace|set|flush|append)\b} \
+        \
+        {\btc\s+.*\s+(add|del|delete|change|replace)\b} \
+        \
+        {\bnft\s+.*\s+(add|delete|insert|replace|flush|destroy|create)\b} \
+        \
+        {\bip6?tables\s+.*(-[ADIRF]|--append|--delete|--insert|--replace|--flush)\b} \
+        \
+        {\bethtool\s+.*-[EefWKACGLspPuU]} \
+        {\bethtool\s+.*--flash}              \
+        {\bethtool\s+.*--change}             \
+        {\bethtool\s+.*--set}                \
+        {\bethtool\s+.*--reset}              \
+        \
+        {\bping\s+.*-[fiaAQrRs]}             \
+        {\bping\s+-c\s*([6-9]|[1-9][0-9]+)}  \
+        {\bping\s+.*-[iw]\s*0}               \
+        {\btraceroute\s+.*-[gis]}            \
+        \
+        {\bmtr\s+(?!.*--report)}             \
+        {\bmtr\s+.*-c\s*([6-9]|[1-9][0-9]+)} \
+        \
+        {\bdig\s+.*AXFR}                     \
+        {\bdig\s+.*-x\s}                     \
+        {\bdig\s+.*\+trace}                  \
+        \
+        {^host\s+[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+} \
+        {^nslookup\s+[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+} \
     ]
 
     # Maximum command length
@@ -390,6 +448,56 @@ namespace eval ::mcp::security {
     proc _log_debug {msg data} {
         if {[namespace exists ::mcp::log]} {
             ::mcp::log::debug $msg $data
+        }
+    }
+
+    #=========================================================================
+    # PRIVACY FILTER (Lines 400-450)
+    # Reference: DESIGN_NETWORK_COMMANDS.md Section "Privacy Mode"
+    #=========================================================================
+
+    proc apply_privacy_filter {output privacy_level} {
+        switch $privacy_level {
+            "none" {
+                return $output
+            }
+            "standard" {
+                # Mask RFC1918 internal addresses (keep prefix for context)
+                # 10.x.x.x -> 10.x.x
+                set output [regsub -all {(10\.)[0-9]+\.[0-9]+\.[0-9]+} $output {\1x.x.x}]
+                # 172.16-31.x.x -> 172.16.x.x
+                set output [regsub -all {(172\.(1[6-9]|2[0-9]|3[01])\.)[0-9]+\.[0-9]+} $output {\1x.x}]
+                # 192.168.x.x -> 192.168.x.x
+                set output [regsub -all {(192\.168\.)[0-9]+\.[0-9]+} $output {\1x.x}]
+
+                # Mask ephemeral ports (>32767)
+                set output [regsub -all {:([3-6][0-9]{4})([^0-9]|$)} $output {:xxxxx\2}]
+
+                # Mask MAC addresses (keep OUI - first 3 octets)
+                set output [regsub -all {([0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:)[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}} $output {\1xx:xx:xx}]
+
+                return $output
+            }
+            "strict" {
+                # First, mask all MAC addresses to protect them from port masking
+                set output [regsub -all {[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}} $output {xx:xx:xx:xx:xx:xx}]
+
+                # Mask all IPs except loopback (127.x.x.x)
+                # First, protect loopback by marking it
+                set output [regsub -all {127\.0\.0\.[0-9]+} $output {__LOOPBACK__}]
+                # Mask all other IPs
+                set output [regsub -all {[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+} $output {x.x.x.x}]
+                # Restore loopback
+                set output [regsub -all {__LOOPBACK__} $output {127.0.0.1}]
+
+                # Mask all ports (IP:port format)
+                set output [regsub -all {:([0-9]+)([^0-9:]|$)} $output {:xxxxx\2}]
+
+                return $output
+            }
+            default {
+                return $output
+            }
         }
     }
 }
