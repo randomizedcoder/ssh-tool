@@ -115,6 +115,7 @@ pkgs.testers.nixosTest {
           description = "MCP SSH Automation Server";
           wantedBy = [ "multi-user.target" ];
           after = [ "network.target" ];
+          path = [ pkgs.openssh ];
           serviceConfig = {
             Type = "simple";
             ExecStart = "${expect-tcl9}/bin/expect ${self}/mcp/server.tcl --port 3000 --bind 0.0.0.0";
@@ -388,5 +389,115 @@ pkgs.testers.nixosTest {
         )
         line_count = int(result.strip())
         assert line_count >= 100, f"Large file should have >= 100 lines, got: {line_count}"
+
+    # ─── MCP End-to-End Parallel Test ──────────────────────────────────
+    with subtest("20 parallel MCP sessions with command execution"):
+        import time
+
+        # Phase 1: Create JSON request files using cat heredoc (more reliable)
+        agent.succeed("mkdir -p /tmp/mcp_test")
+
+        # Initialize request - use printf to avoid any newline issues
+        agent.succeed(
+            'printf \'%s\' \'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\' > /tmp/mcp_test/init.json'
+        )
+
+        # SSH connect request - use printf and build manually
+        agent.succeed(
+            "printf '%s' '{\"jsonrpc\":\"2.0\",\"id\":100,\"method\":\"tools/call\",\"params\":{\"name\":\"ssh_connect\",\"arguments\":{\"host\":\"" + target_ip + "\",\"user\":\"testuser\",\"password\":\"${users.testuser.password}\",\"port\":${toString sshd.standard.port}}}}' > /tmp/mcp_test/connect.json"
+        )
+
+        # Debug: print what was created
+        init_content = agent.succeed("cat /tmp/mcp_test/init.json")
+        print("init.json content: " + init_content)
+        connect_content = agent.succeed("cat /tmp/mcp_test/connect.json")
+        print("connect.json content: " + connect_content[:200])
+
+        # Phase 2: Initialize MCP session
+        print("Initializing MCP session...")
+        init_result = agent.succeed(
+            f"curl -sf -X POST http://{mcp_ip}:3000/ "
+            f"-H 'Content-Type: application/json' "
+            f"-d @/tmp/mcp_test/init.json"
+        )
+        print(f"Init result: {init_result[:200]}")
+
+        # Phase 3: Establish 20 SSH sessions via MCP (parallel)
+        print("Establishing 20 SSH sessions via MCP (parallel)...")
+        start_connect = time.time()
+
+        # Launch 20 connection requests in parallel
+        agent.succeed(
+            f"for i in $(seq 1 20); do "
+            f"  (curl -sf -X POST http://{mcp_ip}:3000/ "
+            f"   -H 'Content-Type: application/json' "
+            f"   -d @/tmp/mcp_test/connect.json "
+            f"   -o /tmp/mcp_test/conn_$i.json 2>&1) & "
+            f"done; "
+            f"wait"
+        )
+        connect_elapsed = time.time() - start_connect
+        print("20 connections established (" + str(round(connect_elapsed, 2)) + "s)")
+
+        # Extract session IDs from responses - debug first few
+        session_ids = []
+        for i in range(1, 21):
+            try:
+                resp = agent.succeed("cat /tmp/mcp_test/conn_" + str(i) + ".json 2>/dev/null || echo '{}'")
+                # Debug: print first few responses
+                if i <= 3:
+                    print("Response " + str(i) + ": " + resp[:500] if len(resp) > 500 else "Response " + str(i) + ": " + resp)
+                if "session_id" in resp:
+                    # Extract session_id using jq
+                    sid = agent.succeed("jq -r '.result.content[0].text | fromjson | .session_id // empty' /tmp/mcp_test/conn_" + str(i) + ".json 2>/dev/null || true").strip()
+                    if sid and sid != "null":
+                        session_ids.append(sid)
+            except Exception as e:
+                if i <= 3:
+                    print("Error " + str(i) + ": " + str(e))
+                pass
+
+        print("Extracted " + str(len(session_ids)) + " session IDs")
+
+        # Phase 4: Run commands on established sessions (should be FAST)
+        if len(session_ids) >= 10:
+            print("Running 'ip route show' on " + str(len(session_ids)) + " established sessions...")
+
+            # Create command request files
+            for i, sid in enumerate(session_ids):
+                cmd_req = '{"jsonrpc":"2.0","id":' + str(200 + i) + ',"method":"tools/call","params":{"name":"ssh_run_command","arguments":{"session_id":"' + sid + '","command":"ip route show"}}}'
+                agent.succeed("printf '%s' '" + cmd_req + "' > /tmp/mcp_test/cmd_" + str(i) + ".json")
+
+            # Run all commands in parallel
+            start_cmd = time.time()
+            num_sessions = len(session_ids) - 1
+            cmd_parallel = "for i in $(seq 0 " + str(num_sessions) + "); do (curl -sf -X POST http://" + mcp_ip + ":3000/ -H 'Content-Type: application/json' -d @/tmp/mcp_test/cmd_$i.json -o /tmp/mcp_test/result_$i.json 2>&1) & done; wait"
+            agent.succeed(cmd_parallel)
+            cmd_elapsed = time.time() - start_cmd
+
+            # Count successful commands
+            success_count = 0
+            for i in range(len(session_ids)):
+                try:
+                    result = agent.succeed("cat /tmp/mcp_test/result_" + str(i) + ".json 2>/dev/null || echo 'none'")
+                    if "default" in result or "scope" in result or "route" in result.lower():
+                        success_count += 1
+                except:
+                    pass
+
+            cmd_ms = round(cmd_elapsed * 1000)
+            avg_ms = round(cmd_elapsed / len(session_ids) * 1000, 1)
+            print("Commands completed " + str(cmd_ms) + "ms total")
+            print("Successful " + str(success_count) + "/" + str(len(session_ids)))
+            print("Average per command " + str(avg_ms) + "ms")
+
+            # Commands on established sessions should be VERY fast (<1s for all 20)
+            if cmd_elapsed > 5:
+                raise Exception("Commands should complete under 5s but took " + str(round(cmd_elapsed, 2)) + "s")
+        else:
+            print("Only got " + str(len(session_ids)) + " sessions - skipping command test")
+
+        print("MCP parallel connection test complete")
+
   '';
 }

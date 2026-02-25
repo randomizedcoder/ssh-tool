@@ -27,15 +27,22 @@ namespace eval connection::ssh {
         }
 
         # Spawn SSH with appropriate options
+        # Always use IdentitiesOnly=yes and PreferredAuthentications=password,keyboard-interactive
+        # to prevent SSH agent keys from being tried (which causes delays and failures)
         if {$insecure} {
             debug::log 2 "WARNING: Insecure mode enabled - skipping host key verification"
             spawn ssh -o StrictHostKeyChecking=no \
                       -o UserKnownHostsFile=/dev/null \
                       -o LogLevel=ERROR \
+                      -o IdentitiesOnly=yes \
+                      -o PreferredAuthentications=password,keyboard-interactive \
                       -p $port \
                       $user@$host
         } else {
-            spawn ssh -p $port $user@$host
+            spawn ssh -o IdentitiesOnly=yes \
+                      -o PreferredAuthentications=password,keyboard-interactive \
+                      -p $port \
+                      $user@$host
         }
 
         set sid $spawn_id

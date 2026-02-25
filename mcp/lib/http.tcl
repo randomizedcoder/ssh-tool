@@ -145,9 +145,11 @@ namespace eval ::mcp::http {
 
         # Read headers
         while {[gets $chan line] >= 0} {
+            # Strip trailing \r if present (binary mode doesn't strip it)
+            set line [string trimright $line "\r"]
             append request "$line\r\n"
 
-            if {$line eq "" || $line eq "\r"} {
+            if {$line eq ""} {
                 set headers_done 1
                 break
             }
@@ -164,7 +166,10 @@ namespace eval ::mcp::http {
 
         # Read body if present
         if {$content_length > 0} {
+            # Temporarily switch to blocking mode to ensure we read all data
+            fconfigure $chan -blocking 1
             set body [read $chan $content_length]
+            fconfigure $chan -blocking 0
             append request $body
         }
 

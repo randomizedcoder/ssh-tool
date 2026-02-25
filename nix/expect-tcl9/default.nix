@@ -24,8 +24,9 @@ pkgs.stdenv.mkDerivation {
 
   # Apply nixpkgs patches first, then our Tcl 9 patches
   patches = (pkgs.expect.patches or []) ++ [
-    ./tcl9-channel.patch  # Channel driver: TCL_CHANNEL_VERSION_5 with close2Proc
-    ./tcl9-size.patch     # Function signatures: int objc -> Tcl_Size objc
+    ./tcl9-channel.patch      # Channel driver: TCL_CHANNEL_VERSION_5 with close2Proc
+    ./tcl9-size.patch         # Function signatures: int objc -> Tcl_Size objc
+    ./tcl9-close-order.patch  # Fix: disarm event handlers before closing fd
   ];
 
   postPatch = ''

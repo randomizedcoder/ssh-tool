@@ -90,7 +90,33 @@ let
                 guest.port = 22;
               }
             ];
+
+            # Serial console configuration for debugging
+            # Connect with: nc localhost 4110 (slow) or nc localhost 4111 (fast)
+            qemu = {
+              serialConsole = false; # We configure our own
+              extraArgs = [
+                "-name"
+                "mcp-vm,process=mcp-vm"
+                # Slow serial console (ttyS0) - works early in boot
+                "-serial"
+                "tcp:127.0.0.1:${toString ports.console.mcpSerial},server,nowait"
+                # Fast virtio console (hvc0)
+                "-device"
+                "virtio-serial-pci"
+                "-chardev"
+                "socket,id=virtcon,port=${toString ports.console.mcpVirtio},host=127.0.0.1,server=on,wait=off"
+                "-device"
+                "virtconsole,chardev=virtcon"
+              ];
+            };
           };
+
+          # Console output to both ttyS0 (slow/early) and hvc0 (fast/virtio)
+          boot.kernelParams = [
+            "console=ttyS0,115200"
+            "console=hvc0"
+          ];
 
           # ─── Networking ────────────────────────────────────────────────
           networking.hostName = "mcp-vm";
@@ -99,21 +125,17 @@ let
             3000
           ];
 
-          networking.interfaces = lib.mkIf useTap {
-            eth0 = {
-              useDHCP = false;
-              ipv4.addresses = [
-                {
-                  address = network.mcpVmIp;
-                  prefixLength = 24;
-                }
-              ];
+          # Use systemd-networkd for reliable interface matching
+          # The TAP interface appears as enp0s3 (PCI naming) not eth0
+          systemd.network = lib.mkIf useTap {
+            enable = true;
+            networks."10-lan" = {
+              matchConfig.Driver = "virtio_net";
+              address = [ "${network.mcpVmIp}/24" ];
+              gateway = [ network.gateway ];
             };
           };
-          networking.defaultGateway = lib.mkIf useTap {
-            address = network.gateway;
-            interface = "eth0";
-          };
+          networking.useNetworkd = lib.mkIf useTap true;
 
           # ─── SSH Server ────────────────────────────────────────────────
           services.openssh = {
@@ -151,6 +173,8 @@ let
             description = "MCP SSH Automation Server";
             wantedBy = [ "multi-user.target" ];
             after = [ "network.target" ];
+            # Add openssh to PATH so expect can spawn ssh
+            path = [ pkgs.openssh ];
             serviceConfig = {
               Type = "simple";
               # Use flake's self-reference for source

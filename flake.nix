@@ -188,6 +188,7 @@
             testScripts = import ./nix/tests/e2e-test.nix { inherit pkgs lib; };
             loadtestScripts = import ./nix/tests/loadtest.nix { inherit pkgs lib; };
             networkTestScripts = import ./nix/tests/network-commands-test.nix { inherit pkgs lib; };
+            parallelTestScripts = import ./nix/tests/parallel-test.nix { inherit pkgs lib; };
           in
           {
             # VM management
@@ -299,6 +300,16 @@
             ssh-test-network-all = {
               type = "app";
               program = "${networkTestScripts.all}/bin/ssh-test-network-all";
+            };
+
+            # Parallel command test runners
+            ssh-test-parallel = {
+              type = "app";
+              program = "${parallelTestScripts.parallel}/bin/ssh-test-parallel";
+            };
+            ssh-test-parallel-stress = {
+              type = "app";
+              program = "${parallelTestScripts.stress}/bin/ssh-test-parallel-stress";
             };
           }
         );

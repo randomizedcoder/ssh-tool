@@ -122,27 +122,49 @@ let
                 ];
 
             forwardPorts = lib.optionals (!useTap) portForwards;
+
+            # Serial console configuration for debugging
+            # Connect with: nc localhost 4120 (slow) or nc localhost 4121 (fast)
+            qemu = {
+              serialConsole = false; # We configure our own
+              extraArgs = [
+                "-name"
+                "ssh-target,process=ssh-target"
+                # Slow serial console (ttyS0) - works early in boot
+                "-serial"
+                "tcp:127.0.0.1:${toString constants.ports.console.targetSerial},server,nowait"
+                # Fast virtio console (hvc0)
+                "-device"
+                "virtio-serial-pci"
+                "-chardev"
+                "socket,id=virtcon,port=${toString constants.ports.console.targetVirtio},host=127.0.0.1,server=on,wait=off"
+                "-device"
+                "virtconsole,chardev=virtcon"
+              ];
+            };
           };
+
+          # Console output to both ttyS0 (slow/early) and hvc0 (fast/virtio)
+          boot.kernelParams = [
+            "console=ttyS0,115200"
+            "console=hvc0"
+          ];
 
           # ─── Networking ────────────────────────────────────────────────
           networking.hostName = "ssh-target";
           networking.firewall.allowedTCPPorts = allSshPorts;
 
-          networking.interfaces = lib.mkIf useTap {
-            eth0 = {
-              useDHCP = false;
-              ipv4.addresses = [
-                {
-                  address = network.targetVmIp;
-                  prefixLength = 24;
-                }
-              ];
+          # Use systemd-networkd for reliable interface matching
+          # The TAP interface appears as enp0s3 (PCI naming) not eth0
+          systemd.network = lib.mkIf useTap {
+            enable = true;
+            networks."10-lan" = {
+              matchConfig.Driver = "virtio_net";
+              address = [ "${network.targetVmIp}/24" ];
+              gateway = [ network.gateway ];
             };
           };
-          networking.defaultGateway = lib.mkIf useTap {
-            address = network.gateway;
-            interface = "eth0";
-          };
+          networking.useNetworkd = lib.mkIf useTap true;
 
           # ─── Disable default sshd ──────────────────────────────────────
           services.openssh.enable = false;
@@ -192,7 +214,11 @@ let
           };
 
           # Enable connection tracking for conntrack -L testing
-          boot.kernelModules = [ "nf_conntrack" "dummy" "bridge" ];
+          boot.kernelModules = [
+            "nf_conntrack"
+            "dummy"
+            "bridge"
+          ];
 
           # ─── Packages ──────────────────────────────────────────────────
           # Reference: DESIGN_NETWORK_COMMANDS.md "VM Test Infrastructure"
@@ -466,7 +492,10 @@ let
               setup-test-qdisc = {
                 description = "Setup test traffic control qdiscs";
                 wantedBy = [ "multi-user.target" ];
-                after = [ "network.target" "setup-test-interfaces.service" ];
+                after = [
+                  "network.target"
+                  "setup-test-interfaces.service"
+                ];
                 wants = [ "setup-test-interfaces.service" ];
                 serviceConfig = {
                   Type = "oneshot";
