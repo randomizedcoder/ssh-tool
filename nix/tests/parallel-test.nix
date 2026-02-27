@@ -9,6 +9,10 @@ let
   network = constants.network;
   users = constants.users;
 
+  # Import shared test helpers
+  nixLib = import ../lib { inherit pkgs lib; };
+  mcpHealthCheck = nixLib.testHelpers.mcpHealthCheck network.mcpVmIp;
+
   # Common runtime inputs
   runtimeInputs = with pkgs; [
     curl
@@ -23,6 +27,8 @@ let
   mcpRequestScript = ''
     MCP_SESSION_ID=""
     REQUEST_ID=0
+    # Temp file for session ID (shared across subshells)
+    MCP_SESSION_FILE=""
 
     mcp_request() {
       local method="$1"
@@ -39,6 +45,10 @@ let
 
       local headers=()
       headers+=(-H "Content-Type: application/json")
+      # Read session ID from file if available (works across subshells)
+      if [ -n "$MCP_SESSION_FILE" ] && [ -f "$MCP_SESSION_FILE" ]; then
+        MCP_SESSION_ID=$(cat "$MCP_SESSION_FILE")
+      fi
       if [ -n "$MCP_SESSION_ID" ]; then
         headers+=(-H "Mcp-Session-Id: $MCP_SESSION_ID")
       fi
@@ -48,11 +58,14 @@ let
         -d "$request" \
         "http://''${MCP_HOST}:''${MCP_PORT}/")
 
-      # Extract session ID from headers
+      # Extract session ID from headers and save to file
       local new_session
       new_session=$(echo "$response" | grep -i "Mcp-Session-Id:" | cut -d: -f2 | tr -d ' \r\n')
       if [ -n "$new_session" ]; then
         MCP_SESSION_ID="$new_session"
+        if [ -n "$MCP_SESSION_FILE" ]; then
+          echo "$new_session" > "$MCP_SESSION_FILE"
+        fi
       fi
 
       # Return body only (after blank line)
@@ -61,6 +74,7 @@ let
 
     mcp_initialize() {
       local params='{"protocolVersion":"2024-11-05","clientInfo":{"name":"parallel-test","version":"1.0.0"}}'
+      # Session file should be set by caller via MCP_SESSION_FILE env var
       mcp_request "initialize" "$params"
     }
 
@@ -88,22 +102,6 @@ let
     extract_session_id() {
       echo "$1" | grep -o '"session_id":"[^"]*"' | head -1 | cut -d'"' -f4
     }
-  '';
-
-  # Health check helper
-  healthCheck = ''
-    echo "Checking MCP server health..."
-    for i in $(seq 1 30); do
-      if curl -sf "http://''${MCP_HOST}:''${MCP_PORT}/health" >/dev/null 2>&1; then
-        echo "MCP server is ready"
-        break
-      fi
-      if [ "$i" -eq 30 ]; then
-        echo "ERROR: MCP server not responding after 30 seconds"
-        exit 1
-      fi
-      sleep 1
-    done
   '';
 
 in
@@ -135,20 +133,26 @@ in
       echo "Commands: ''${NUM_COMMANDS} x '$COMMAND'"
       echo ""
 
-      ${healthCheck}
+      ${mcpHealthCheck}
 
-      # Initialize MCP session
+      # Create temp dir for results (needed for session file)
+      RESULTS_DIR=$(mktemp -d)
+      trap 'rm -rf "$RESULTS_DIR"' EXIT
+
+      # Initialize MCP session - set up session file first to persist across subshells
       echo "Initializing MCP session..."
+      MCP_SESSION_FILE="$RESULTS_DIR/mcp_session_id"
+      export MCP_SESSION_FILE
       response=$(mcp_initialize)
       if echo "$response" | grep -q '"error"'; then
         echo "ERROR: Failed to initialize: $response"
         exit 1
       fi
+      # Read session ID from file (subshell wrote it there)
+      if [ -f "$MCP_SESSION_FILE" ]; then
+        MCP_SESSION_ID=$(cat "$MCP_SESSION_FILE")
+      fi
       echo "MCP Session: $MCP_SESSION_ID"
-
-      # Create temp dir for results
-      RESULTS_DIR=$(mktemp -d)
-      trap 'rm -rf "$RESULTS_DIR"' EXIT
 
       echo ""
       echo "Creating $NUM_COMMANDS parallel SSH sessions..."
@@ -159,14 +163,36 @@ in
 
       # Create multiple SSH sessions in parallel (one per command)
       # Each session runs independently to avoid pty race conditions
+      # Server returns "busy" if another connection is in progress - retry with backoff
       for i in $(seq 1 "$NUM_COMMANDS"); do
         (
-          # Each parallel worker creates its own SSH session
-          conn_response=$(ssh_connect "$SSH_HOST" "$SSH_USER" "$SSH_PASSWORD" "$SSH_PORT")
-          session_id=$(echo "$conn_response" | grep -o '"session_id":"[^"]*"' | cut -d'"' -f4)
+          session_id=""
+          max_retries=30
+          retry=0
+
+          # Retry loop for "busy" responses
+          while [ -z "$session_id" ] && [ "$retry" -lt "$max_retries" ]; do
+            conn_response=$(ssh_connect "$SSH_HOST" "$SSH_USER" "$SSH_PASSWORD" "$SSH_PORT")
+
+            # Check if server is busy
+            if echo "$conn_response" | grep -q "busy\|Server busy"; then
+              ((retry++)) || true
+              # Random backoff (0.5-2 seconds) to avoid thundering herd
+              sleep "0.$((RANDOM % 15 + 5))"
+              continue
+            fi
+
+            session_id=$(echo "$conn_response" | grep -o '"session_id":"[^"]*"' | cut -d'"' -f4)
+            if [ -z "$session_id" ]; then
+              # Not busy but no session - real error
+              echo "connect_failed" > "$RESULTS_DIR/result_$i.json"
+              break
+            fi
+          done
 
           if [ -z "$session_id" ]; then
-            echo "connect_failed" > "$RESULTS_DIR/result_$i.json"
+            # Max retries reached
+            echo "max_retries" > "$RESULTS_DIR/result_$i.json"
           else
             echo "$session_id" > "$RESULTS_DIR/session_$i.txt"
             # Run command on this session
@@ -192,7 +218,7 @@ in
         result_file="$RESULTS_DIR/result_$i.json"
         if [ -f "$result_file" ]; then
           content=$(cat "$result_file")
-          if [ "$content" = "connect_failed" ]; then
+          if [ "$content" = "connect_failed" ] || [ "$content" = "max_retries" ]; then
             ((FAILED++)) || true
           elif echo "$content" | grep -q '"isError":true'; then
             ((FAILED++)) || true
@@ -278,18 +304,26 @@ in
       echo "Commands: ''${NUM_COMMANDS}"
       echo ""
 
-      ${healthCheck}
+      ${mcpHealthCheck}
 
+      # Create temp dir for results (needed for session file)
+      RESULTS_DIR=$(mktemp -d)
+      trap 'rm -rf "$RESULTS_DIR"' EXIT
+
+      # Initialize MCP session - set up session file first to persist across subshells
       echo "Initializing MCP session..."
+      MCP_SESSION_FILE="$RESULTS_DIR/mcp_session_id"
+      export MCP_SESSION_FILE
       response=$(mcp_initialize)
       if echo "$response" | grep -q '"error"'; then
         echo "ERROR: Failed to initialize: $response"
         exit 1
       fi
+      # Read session ID from file (subshell wrote it there)
+      if [ -f "$MCP_SESSION_FILE" ]; then
+        MCP_SESSION_ID=$(cat "$MCP_SESSION_FILE")
+      fi
       echo "MCP Session: $MCP_SESSION_ID"
-
-      RESULTS_DIR=$(mktemp -d)
-      trap 'rm -rf "$RESULTS_DIR"' EXIT
 
       echo ""
       echo "Creating $NUM_COMMANDS parallel SSH sessions..."
@@ -297,14 +331,33 @@ in
       START_TIME=$(date +%s.%N)
 
       # Each parallel worker creates its own SSH session to avoid pty race conditions
+      # Server returns "busy" if another connection is in progress - retry with backoff
       for i in $(seq 1 "$NUM_COMMANDS"); do
         (
-          # Create dedicated SSH session for this command
-          conn_response=$(ssh_connect "$SSH_HOST" "$SSH_USER" "$PASSWORD" "$SSH_PORT")
-          session_id=$(echo "$conn_response" | grep -o '"session_id":"[^"]*"' | cut -d'"' -f4)
+          session_id=""
+          max_retries=60
+          retry=0
+
+          # Retry loop for "busy" responses
+          while [ -z "$session_id" ] && [ "$retry" -lt "$max_retries" ]; do
+            conn_response=$(ssh_connect "$SSH_HOST" "$SSH_USER" "$PASSWORD" "$SSH_PORT")
+
+            # Check if server is busy
+            if echo "$conn_response" | grep -q "busy\|Server busy"; then
+              ((retry++)) || true
+              sleep "0.$((RANDOM % 15 + 5))"
+              continue
+            fi
+
+            session_id=$(echo "$conn_response" | grep -o '"session_id":"[^"]*"' | cut -d'"' -f4)
+            if [ -z "$session_id" ]; then
+              echo "connect_failed" > "$RESULTS_DIR/result_$i.json"
+              break
+            fi
+          done
 
           if [ -z "$session_id" ]; then
-            echo "connect_failed" > "$RESULTS_DIR/result_$i.json"
+            [ ! -f "$RESULTS_DIR/result_$i.json" ] && echo "max_retries" > "$RESULTS_DIR/result_$i.json"
           else
             # Run command on this session
             result=$(ssh_run_command "$session_id" "hostname")
@@ -327,7 +380,7 @@ in
         result_file="$RESULTS_DIR/result_$i.json"
         if [ -f "$result_file" ]; then
           content=$(cat "$result_file")
-          if [ "$content" = "connect_failed" ]; then
+          if [ "$content" = "connect_failed" ] || [ "$content" = "max_retries" ]; then
             ((FAILED++)) || true
           elif echo "$content" | grep -q '"isError":true'; then
             ((FAILED++)) || true

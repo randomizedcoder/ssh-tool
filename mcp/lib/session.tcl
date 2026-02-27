@@ -28,7 +28,7 @@ namespace eval ::mcp::session {
     # Session CRUD (Lines 30-80)
     #=========================================================================
 
-    # Create new session
+    # Create new session (legacy mode with spawn_id)
     # @param spawn_id    The expect spawn_id for this SSH connection
     # @param host        Target host
     # @param user        SSH username
@@ -56,6 +56,7 @@ namespace eval ::mcp::session {
             mcp_session   $mcp_session_id \
             in_use        0 \
             sudo_at       0 \
+            threadpool    0 \
         ]
 
         dict set sessions $session_id $session_data
@@ -67,6 +68,46 @@ namespace eval ::mcp::session {
         ]
 
         return $session_id
+    }
+
+    # Create session tracking entry for thread pool mode
+    # The actual session data lives in the worker thread; this is just
+    # for ownership verification and metadata in the main thread.
+    # @param session_id  Pre-generated session ID
+    # @param host        Target host
+    # @param user        SSH username
+    # @param mcp_session_id  The MCP session this SSH session belongs to
+    proc create_threadpool {session_id host user mcp_session_id} {
+        variable sessions
+        variable max_sessions
+
+        # Check limit
+        if {[count] >= $max_sessions} {
+            error "SESSION: Maximum session limit ($max_sessions) reached"
+        }
+
+        set now [clock milliseconds]
+
+        set session_data [dict create \
+            spawn_id      0 \
+            host          $host \
+            user          $user \
+            is_root       0 \
+            created_at    $now \
+            last_used_at  $now \
+            mcp_session   $mcp_session_id \
+            in_use        0 \
+            sudo_at       0 \
+            threadpool    1 \
+        ]
+
+        dict set sessions $session_id $session_data
+
+        _log_info "Session created (threadpool)" [dict create \
+            session_id $session_id \
+            host $host \
+            user $user \
+        ]
     }
 
     # Get session by ID

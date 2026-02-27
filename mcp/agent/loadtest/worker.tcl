@@ -6,14 +6,18 @@
 
 package require Tcl 9.0-
 
-# Find and source dependencies
-set script_dir [file dirname [info script]]
-set agent_dir [file dirname $script_dir]
+# Find and source dependencies - use absolute paths to work from any cwd
+# Use unique variable names to avoid collision with sourced files (mcp_client.tcl
+# overwrites the global script_dir variable)
+set _worker_dir [file normalize [file dirname [info script]]]
+set _agent_dir [file dirname $_worker_dir]
 
-source [file join $agent_dir http_client.tcl]
-source [file join $agent_dir json.tcl]
-source [file join $agent_dir mcp_client.tcl]
-source [file join $script_dir output jsonl_writer.tcl]
+# Source agent libraries first (they may overwrite globals)
+source [file join $_agent_dir http_client.tcl]
+source [file join $_agent_dir json.tcl]
+source [file join $_agent_dir mcp_client.tcl]
+# Source worker-specific files last
+source [file join $_worker_dir output jsonl_writer.tcl]
 
 namespace eval ::loadtest::worker {
     variable worker_id ""

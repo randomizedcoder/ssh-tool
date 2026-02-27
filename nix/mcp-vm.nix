@@ -20,11 +20,11 @@
   debugMode ? false,
 }:
 let
-  # Import modular constants
-  network = import ./constants/network.nix;
-  ports = import ./constants/ports.nix;
-  users = import ./constants/users.nix;
-  timeouts = import ./constants/timeouts.nix;
+  constants = import ./constants;
+  network = constants.network;
+  ports = constants.ports;
+  users = constants.users;
+  resources = constants.resources.profiles.default;
 
   # Expect with Tcl 9.0 support
   # TODO: Replace with pkgs.tclPackages_9_0.expect after PR #490930 merges
@@ -39,114 +39,59 @@ let
     modules = [
       microvm.nixosModules.microvm
 
+      # Import shared modules
+      ./modules/vm-base.nix
+      ./modules/vm-networking.nix
+      ./modules/vm-users.nix
+
       (
         { config, pkgs, ... }:
         {
-          system.stateVersion = "24.05";
           nixpkgs.hostPlatform = system;
 
-          # ─── MicroVM Configuration ─────────────────────────────────────
-          microvm = {
-            hypervisor = "qemu";
-            mem = users.vmResources.mcp.memoryMB;
-            vcpu = users.vmResources.mcp.vcpus;
-
-            shares = [
-              {
-                tag = "ro-store";
-                source = "/nix/store";
-                mountPoint = "/nix/.ro-store";
-                proto = "9p";
-              }
-            ];
-
-            interfaces =
-              if useTap then
-                [
-                  {
-                    type = "tap";
-                    id = network.tapMcp;
-                    mac = network.mcpVmMac;
-                  }
-                ]
-              else
-                [
-                  {
-                    type = "user";
-                    id = "eth0";
-                    mac = network.mcpVmMac;
-                  }
-                ];
-
-            forwardPorts = lib.optionals (!useTap) [
-              {
-                from = "host";
-                host.port = ports.mcpForward;
-                guest.port = 3000;
-              }
-              {
-                from = "host";
-                host.port = ports.sshForwardMcp;
-                guest.port = 22;
-              }
-            ];
-
-            # Serial console configuration for debugging
-            # Connect with: nc localhost 4110 (slow) or nc localhost 4111 (fast)
-            qemu = {
-              serialConsole = false; # We configure our own
-              extraArgs = [
-                "-name"
-                "mcp-vm,process=mcp-vm"
-                # Slow serial console (ttyS0) - works early in boot
-                "-serial"
-                "tcp:127.0.0.1:${toString ports.console.mcpSerial},server,nowait"
-                # Fast virtio console (hvc0)
-                "-device"
-                "virtio-serial-pci"
-                "-chardev"
-                "socket,id=virtcon,port=${toString ports.console.mcpVirtio},host=127.0.0.1,server=on,wait=off"
-                "-device"
-                "virtconsole,chardev=virtcon"
-              ];
-            };
+          # ─── VM Base Configuration ───────────────────────────────────────
+          vmBase = {
+            vmName = "mcp-vm";
+            serialPort = ports.console.mcpSerial;
+            virtioPort = ports.console.mcpVirtio;
+            memoryMB = resources.mcp.memoryMB;
+            vcpus = resources.mcp.vcpus;
           };
 
-          # Console output to both ttyS0 (slow/early) and hvc0 (fast/virtio)
-          boot.kernelParams = [
-            "console=ttyS0,115200"
-            "console=hvc0"
-          ];
+          # ─── Networking ──────────────────────────────────────────────────
+          vmNetworking = {
+            inherit useTap;
+            tapDevice = network.tapMcp;
+            macAddress = network.mcpVmMac;
+            ipAddress = network.mcpVmIp;
+            gateway = network.gateway;
+            hostPorts = [
+              {
+                host = ports.mcpForward;
+                guest = 3000;
+              }
+              {
+                host = ports.sshForwardMcp;
+                guest = 22;
+              }
+            ];
+          };
 
-          # ─── Networking ────────────────────────────────────────────────
           networking.hostName = "mcp-vm";
           networking.firewall.allowedTCPPorts = [
             22
             3000
           ];
 
-          # Use systemd-networkd for reliable interface matching
-          # The TAP interface appears as enp0s3 (PCI naming) not eth0
-          systemd.network = lib.mkIf useTap {
-            enable = true;
-            networks."10-lan" = {
-              matchConfig.Driver = "virtio_net";
-              address = [ "${network.mcpVmIp}/24" ];
-              gateway = [ network.gateway ];
-            };
-          };
-          networking.useNetworkd = lib.mkIf useTap true;
-
-          # ─── SSH Server ────────────────────────────────────────────────
-          services.openssh = {
-            enable = true;
-            settings = {
-              PasswordAuthentication = debugMode;
-              PermitRootLogin = if debugMode then "yes" else "prohibit-password";
-            };
+          # ─── Users ───────────────────────────────────────────────────────
+          vmUsers = {
+            testUserPassword = users.testuser.password;
+            enableDebugRoot = debugMode;
+            rootPassword = users.root.password;
+            enablePasswordAuth = debugMode;
           };
 
-          # ─── Packages ──────────────────────────────────────────────────
+          # ─── Packages ────────────────────────────────────────────────────
           environment.systemPackages = with pkgs; [
             expect-tcl9
             tcl-9_0
@@ -155,18 +100,7 @@ let
             openssh
           ];
 
-          # ─── Test User ─────────────────────────────────────────────────
-          users.users.testuser = {
-            isNormalUser = true;
-            password = users.testuser.password;
-            extraGroups = [ "wheel" ];
-          };
-
-          users.users.root.password = lib.mkIf debugMode users.root.password;
-
-          security.sudo.wheelNeedsPassword = false;
-
-          # ─── MCP Server Service ────────────────────────────────────────
+          # ─── MCP Server Service ──────────────────────────────────────────
           # Uses `self` to run the exact code from the flake's commit.
           # This ensures reproducibility - the VM always runs the committed version.
           systemd.services.mcp-server = {
@@ -178,13 +112,13 @@ let
             serviceConfig = {
               Type = "simple";
               # Use flake's self-reference for source
-              ExecStart = "${expect-tcl9}/bin/expect ${self}/mcp/server.tcl --port 3000 --bind 0.0.0.0";
+              ExecStart = "${expect-tcl9}/bin/expect ${self}/mcp/server.tcl --port 3000 --bind 0.0.0.0 --debug DEBUG";
               Restart = "always";
               WorkingDirectory = "${self}";
             };
           };
 
-          # ─── MOTD ──────────────────────────────────────────────────────
+          # ─── MOTD ────────────────────────────────────────────────────────
           environment.etc."motd".text =
             if debugMode then
               ''

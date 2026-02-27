@@ -11,4 +11,5 @@
   sshd = import ./sshd.nix;
   netem = import ./netem.nix;
   loadtest = import ./loadtest.nix;
+  resources = import ./resources.nix;
 }

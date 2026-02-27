@@ -19,9 +19,11 @@
   debugMode ? false,
 }:
 let
-  network = import ./constants/network.nix;
-  ports = import ./constants/ports.nix;
-  users = import ./constants/users.nix;
+  constants = import ./constants;
+  network = constants.network;
+  ports = constants.ports;
+  users = constants.users;
+  resources = constants.resources.profiles.default;
 
   useTap = networking == "tap";
 
@@ -32,106 +34,52 @@ let
     modules = [
       microvm.nixosModules.microvm
 
+      # Import shared modules
+      ./modules/vm-base.nix
+      ./modules/vm-networking.nix
+      ./modules/vm-users.nix
+
       (
         { config, pkgs, ... }:
         {
-          system.stateVersion = "24.05";
           nixpkgs.hostPlatform = system;
 
-          # ─── MicroVM Configuration ─────────────────────────────────────
-          microvm = {
-            hypervisor = "qemu";
-            mem = users.vmResources.agent.memoryMB;
-            vcpu = users.vmResources.agent.vcpus;
-
-            shares = [
-              {
-                tag = "ro-store";
-                source = "/nix/store";
-                mountPoint = "/nix/.ro-store";
-                proto = "9p";
-              }
-            ];
-
-            interfaces =
-              if useTap then
-                [
-                  {
-                    type = "tap";
-                    id = network.tapAgent;
-                    mac = network.agentVmMac;
-                  }
-                ]
-              else
-                [
-                  {
-                    type = "user";
-                    id = "eth0";
-                    mac = network.agentVmMac;
-                  }
-                ];
-
-            forwardPorts = lib.optionals (!useTap) [
-              {
-                from = "host";
-                host.port = ports.sshForwardAgent;
-                guest.port = 22;
-              }
-            ];
-
-            # Serial console configuration for debugging
-            # Connect with: nc localhost 4100 (slow) or nc localhost 4101 (fast)
-            qemu = {
-              serialConsole = false; # We configure our own
-              extraArgs = [
-                "-name"
-                "agent-vm,process=agent-vm"
-                # Slow serial console (ttyS0) - works early in boot
-                "-serial"
-                "tcp:127.0.0.1:${toString ports.console.agentSerial},server,nowait"
-                # Fast virtio console (hvc0)
-                "-device"
-                "virtio-serial-pci"
-                "-chardev"
-                "socket,id=virtcon,port=${toString ports.console.agentVirtio},host=127.0.0.1,server=on,wait=off"
-                "-device"
-                "virtconsole,chardev=virtcon"
-              ];
-            };
+          # ─── VM Base Configuration ───────────────────────────────────────
+          vmBase = {
+            vmName = "agent-vm";
+            serialPort = ports.console.agentSerial;
+            virtioPort = ports.console.agentVirtio;
+            memoryMB = resources.agent.memoryMB;
+            vcpus = resources.agent.vcpus;
           };
 
-          # Console output to both ttyS0 (slow/early) and hvc0 (fast/virtio)
-          boot.kernelParams = [
-            "console=ttyS0,115200"
-            "console=hvc0"
-          ];
+          # ─── Networking ──────────────────────────────────────────────────
+          vmNetworking = {
+            inherit useTap;
+            tapDevice = network.tapAgent;
+            macAddress = network.agentVmMac;
+            ipAddress = network.agentVmIp;
+            gateway = network.gateway;
+            hostPorts = [
+              {
+                host = ports.sshForwardAgent;
+                guest = 22;
+              }
+            ];
+          };
 
-          # ─── Networking ────────────────────────────────────────────────
           networking.hostName = "agent-vm";
           networking.firewall.allowedTCPPorts = [ 22 ];
 
-          # Use systemd-networkd for reliable interface matching
-          # The TAP interface appears as enp0s3 (PCI naming) not eth0
-          systemd.network = lib.mkIf useTap {
-            enable = true;
-            networks."10-lan" = {
-              matchConfig.Driver = "virtio_net";
-              address = [ "${network.agentVmIp}/24" ];
-              gateway = [ network.gateway ];
-            };
-          };
-          networking.useNetworkd = lib.mkIf useTap true;
-
-          # ─── SSH Server (for debug access) ─────────────────────────────
-          services.openssh = {
-            enable = true;
-            settings = {
-              PasswordAuthentication = debugMode;
-              PermitRootLogin = if debugMode then "yes" else "prohibit-password";
-            };
+          # ─── Users ───────────────────────────────────────────────────────
+          vmUsers = {
+            testUserPassword = users.testuser.password;
+            enableDebugRoot = debugMode;
+            rootPassword = users.root.password;
+            enablePasswordAuth = debugMode;
           };
 
-          # ─── Packages ──────────────────────────────────────────────────
+          # ─── Packages ────────────────────────────────────────────────────
           environment.systemPackages = with pkgs; [
             tcl-9_0
             curl
@@ -139,25 +87,14 @@ let
             netcat-gnu
           ];
 
-          # ─── Test User ─────────────────────────────────────────────────
-          users.users.testuser = {
-            isNormalUser = true;
-            password = users.testuser.password;
-            extraGroups = [ "wheel" ];
-          };
-
-          users.users.root.password = lib.mkIf debugMode users.root.password;
-
-          security.sudo.wheelNeedsPassword = false;
-
-          # ─── Agent Source ──────────────────────────────────────────────
+          # ─── Agent Source ────────────────────────────────────────────────
           # Copy agent scripts to /opt/agent
           environment.etc."agent/http_client.tcl".source = "${self}/mcp/agent/http_client.tcl";
           environment.etc."agent/json.tcl".source = "${self}/mcp/agent/json.tcl";
           environment.etc."agent/mcp_client.tcl".source = "${self}/mcp/agent/mcp_client.tcl";
           environment.etc."agent/e2e_test.tcl".source = "${self}/mcp/agent/e2e_test.tcl";
 
-          # ─── Test Runner Script ────────────────────────────────────────
+          # ─── Test Runner Script ──────────────────────────────────────────
           environment.etc."agent/run-tests.sh" = {
             mode = "0755";
             text = ''
@@ -167,7 +104,7 @@ let
             '';
           };
 
-          # ─── Debug Mode: Auto-run Tests ────────────────────────────────
+          # ─── Debug Mode: Auto-run Tests ──────────────────────────────────
           systemd.services.agent-test = lib.mkIf debugMode {
             description = "MCP Agent E2E Tests";
             wantedBy = [ "multi-user.target" ];
@@ -185,7 +122,7 @@ let
             };
           };
 
-          # ─── MOTD ──────────────────────────────────────────────────────
+          # ─── MOTD ────────────────────────────────────────────────────────
           environment.etc."motd".text = ''
             ╔═══════════════════════════════════════════════════════════════╗
             ║  Agent-VM: TCL MCP Test Agent                                 ║

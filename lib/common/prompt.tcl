@@ -45,8 +45,8 @@ namespace eval prompt {
         # Disable bracket-paste mode first (prevents \e[?2004h sequences)
         send -i $spawn_id "bind 'set enable-bracketed-paste off' 2>/dev/null; printf '\\e\[?2004l'\r"
 
-        # Wait briefly for that to take effect
-        set timeout 2
+        # Wait briefly for that to take effect (reduced from 2s)
+        set timeout 1
         expect -i $spawn_id {
             -re {[$#>] } { }
             timeout { }
@@ -55,18 +55,18 @@ namespace eval prompt {
         # Disable TERM features that cause issues (colors, readline)
         # Also clear PS0, PS2 and any shell integration functions
         send -i $spawn_id "export TERM=dumb PROMPT_COMMAND='' PS0='' PS2='> '\r"
-        expect -i $spawn_id -timeout 2 -re {.} { exp_continue } timeout { }
+        expect -i $spawn_id -timeout 1 -re {.} { exp_continue } timeout { }
 
         # Disable systemd shell integration (Fedora uses this for OSC 3008 sequences)
         send -i $spawn_id "unset -f __vte_prompt_command 2>/dev/null; unset -f __osc_133_first_time 2>/dev/null\r"
-        expect -i $spawn_id -timeout 2 -re {.} { exp_continue } timeout { }
+        expect -i $spawn_id -timeout 1 -re {.} { exp_continue } timeout { }
 
         # Shell-agnostic prompt setting
         # Works on: bash, zsh, sh, dash, ksh (POSIX)
         # Fallback for: csh, tcsh
         send -i $spawn_id "PS1='$m ' 2>/dev/null || set prompt='$m '\r"
 
-        set timeout 10
+        set timeout 5
         expect -i $spawn_id \
             -ex $user_pattern {
                 debug::log 5 "Prompt initialized: $m"
@@ -87,7 +87,7 @@ namespace eval prompt {
         expect -i $spawn_id -timeout 0 -re {.+} { }
 
         # Wait for the shell to output the new prompt (it will print prompt after PS1 change)
-        expect -i $spawn_id -timeout 2 \
+        expect -i $spawn_id -timeout 1 \
             -ex $user_pattern { } \
             -ex $root_pattern { } \
             timeout { }

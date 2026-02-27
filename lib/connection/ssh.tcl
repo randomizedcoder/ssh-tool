@@ -29,6 +29,7 @@ namespace eval connection::ssh {
         # Spawn SSH with appropriate options
         # Always use IdentitiesOnly=yes and PreferredAuthentications=password,keyboard-interactive
         # to prevent SSH agent keys from being tried (which causes delays and failures)
+        debug::log 3 "About to spawn SSH, current spawn_id=[info exists spawn_id]"
         if {$insecure} {
             debug::log 2 "WARNING: Insecure mode enabled - skipping host key verification"
             spawn ssh -o StrictHostKeyChecking=no \
@@ -46,24 +47,32 @@ namespace eval connection::ssh {
         }
 
         set sid $spawn_id
+        debug::log 3 "SSH spawned, sid=$sid, global spawn_id=$spawn_id"
 
-        set timeout 30
+        # Verify spawn_id is valid
+        if {$sid eq ""} {
+            debug::log 1 "ERROR: spawn returned empty spawn_id!"
+            return ""
+        }
+
+        set timeout 10
+        debug::log 3 "Starting expect loop, sid=$sid, spawn_id=$spawn_id"
         expect {
             # Host key verification prompt
             -re {\(yes/no(/\[fingerprint\])?\)\?\s*$} {
-                debug::log 2 "Host key verification prompt - accepting"
+                debug::log 2 "Host key verification prompt - accepting (spawn_id=$spawn_id, sid=$sid)"
                 send "yes\r"
                 exp_continue
             }
             # Continue connecting prompt (ECDSA key fingerprint)
             -re {Are you sure you want to continue connecting} {
-                debug::log 2 "Host key verification prompt - accepting"
+                debug::log 2 "Host key verification prompt - accepting (spawn_id=$spawn_id, sid=$sid)"
                 send "yes\r"
                 exp_continue
             }
             # Password prompt - FAST: anchored, specific pattern
             -re {[Pp]assword:\s*$} {
-                debug::log 4 "Password prompt received"
+                debug::log 4 "Password prompt received (spawn_id=$spawn_id, sid=$sid)"
                 send "$password\r"
                 exp_continue
             }
@@ -97,7 +106,7 @@ namespace eval connection::ssh {
             }
             # Any shell prompt (initial connection) - common patterns
             -re {[$#%>]\s*$} {
-                debug::log 3 "Initial shell prompt received"
+                debug::log 3 "Initial shell prompt received (spawn_id=$spawn_id, sid=$sid)"
             }
             timeout {
                 debug::log 1 "Connection timeout"
@@ -111,6 +120,7 @@ namespace eval connection::ssh {
                 return ""
             }
         }
+        debug::log 3 "Expect loop finished, sid=$sid, spawn_id=$spawn_id"
 
         # Initialize unique prompt
         if {![prompt::init $sid 0]} {

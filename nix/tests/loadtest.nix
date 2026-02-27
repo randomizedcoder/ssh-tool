@@ -9,9 +9,14 @@ let
   network = constants.network;
   loadtest = constants.loadtest;
 
+  # Import shared test helpers
+  nixLib = import ../lib { inherit pkgs lib; };
+  mcpHealthCheck = nixLib.testHelpers.mcpHealthCheck network.mcpVmIp;
+
   # Common runtime inputs for load test scripts
+  # Use TCL 9.0 as required by the load test framework
   runtimeInputs = with pkgs; [
-    tcl
+    tcl-9_0
     curl
     jq
     netcat-gnu
@@ -19,21 +24,19 @@ let
     coreutils
   ];
 
-  # Health check helper
-  healthCheck = ''
-    echo "Checking MCP server health..."
-    for i in $(seq 1 30); do
-      if curl -sf "http://${network.mcpVmIp}:3000/health" >/dev/null 2>&1; then
-        echo "MCP server is ready"
-        break
-      fi
-      if [ "$i" -eq 30 ]; then
-        echo "ERROR: MCP server not responding after 30 seconds"
-        exit 1
-      fi
-      sleep 1
-    done
-  '';
+  # Copy the entire MCP agent directory to preserve the loadtest structure
+  mcpAgentDir = pkgs.stdenv.mkDerivation {
+    name = "mcp-agent-loadtest";
+    src = ../../mcp/agent;
+    phases = [ "installPhase" ];
+    installPhase = ''
+      mkdir -p $out
+      cp -r $src/* $out/
+    '';
+  };
+
+  # Path to the loadtest run script
+  loadtestScript = "${mcpAgentDir}/loadtest/run.tcl";
 
 in
 {
@@ -47,11 +50,11 @@ in
       echo "=== SSH-Tool Load Test: Quick (30s) ==="
       echo ""
 
-      ${healthCheck}
+      ${mcpHealthCheck}
 
       echo ""
       echo "Running quick load test..."
-      tclsh ${../../mcp/agent/loadtest/run.tcl} --quick \
+      tclsh ${loadtestScript} --quick \
         --mcp-host ${network.mcpVmIp} \
         --target-host ${network.targetVmIp}
 
@@ -77,10 +80,10 @@ in
       echo "Workers:  $WORKERS"
       echo ""
 
-      ${healthCheck}
+      ${mcpHealthCheck}
 
       echo ""
-      tclsh ${../../mcp/agent/loadtest/run.tcl} \
+      tclsh ${loadtestScript} \
         --scenario "$SCENARIO" \
         --duration "$DURATION" \
         --workers "$WORKERS" \
@@ -102,10 +105,10 @@ in
       echo "Estimated time: 15-20 minutes"
       echo ""
 
-      ${healthCheck}
+      ${mcpHealthCheck}
 
       echo ""
-      tclsh ${../../mcp/agent/loadtest/run.tcl} --full \
+      tclsh ${loadtestScript} --full \
         --mcp-host ${network.mcpVmIp} \
         --target-host ${network.targetVmIp}
 
@@ -125,9 +128,9 @@ in
 
       echo "=== Connection Rate Test ==="
 
-      ${healthCheck}
+      ${mcpHealthCheck}
 
-      tclsh ${../../mcp/agent/loadtest/run.tcl} \
+      tclsh ${loadtestScript} \
         --scenario connection_rate \
         --duration "$DURATION" \
         --mcp-host ${network.mcpVmIp} \
@@ -147,9 +150,9 @@ in
 
       echo "=== Command Throughput Test ==="
 
-      ${healthCheck}
+      ${mcpHealthCheck}
 
-      tclsh ${../../mcp/agent/loadtest/run.tcl} \
+      tclsh ${loadtestScript} \
         --scenario command_throughput \
         --duration "$DURATION" \
         --workers "$WORKERS" \
@@ -168,9 +171,9 @@ in
       echo "=== Latency Sensitivity Test ==="
       echo "Testing against netem ports (2322-2328)"
 
-      ${healthCheck}
+      ${mcpHealthCheck}
 
-      tclsh ${../../mcp/agent/loadtest/run.tcl} \
+      tclsh ${loadtestScript} \
         --scenario latency_test \
         --mcp-host ${network.mcpVmIp} \
         --target-host ${network.targetVmIp}
@@ -182,14 +185,17 @@ in
     name = "ssh-loadtest-list";
     inherit runtimeInputs;
     text = ''
-      tclsh ${../../mcp/agent/loadtest/run.tcl} --list-scenarios
+      tclsh ${loadtestScript} --list-scenarios
     '';
   };
 
   # Metrics scraper (for debugging)
   scrapeMetrics = pkgs.writeShellApplication {
     name = "ssh-loadtest-metrics";
-    runtimeInputs = with pkgs; [ curl jq ];
+    runtimeInputs = with pkgs; [
+      curl
+      jq
+    ];
     text = ''
       set -euo pipefail
 

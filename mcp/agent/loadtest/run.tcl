@@ -16,7 +16,8 @@
 package require Tcl 9.0-
 
 # Use unique variable names to avoid collision with sourced files
-set _loadtest_dir [file dirname [info script]]
+# Normalize to absolute paths so sourcing works from any cwd
+set _loadtest_dir [file normalize [file dirname [info script]]]
 set _agent_dir [file dirname $_loadtest_dir]
 
 # Source dependencies - order matters!

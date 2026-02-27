@@ -316,9 +316,13 @@ namespace eval ::mcp::tools {
 
     #=========================================================================
     # ssh_connect (Lines 185-240)
+    # Now uses thread pool for concurrent connections
     #=========================================================================
 
     proc tool_ssh_connect {args mcp_session_id} {
+        set start_time [clock milliseconds]
+        ::mcp::log::debug "ssh_connect START" [dict create mcp_session $mcp_session_id]
+
         # Validate required params
         if {![dict exists $args host]} {
             return [_tool_error "Missing required parameter: host"]
@@ -330,31 +334,46 @@ namespace eval ::mcp::tools {
         set host [dict get $args host]
         set password [dict get $args password]
         set user [expr {[dict exists $args user] ? [dict get $args user] : $::env(USER)}]
+        set port [expr {[dict exists $args port] ? [dict get $args port] : 22}]
         set insecure [expr {[dict exists $args insecure] ? [dict get $args insecure] : 0}]
         if {$insecure eq "true"} { set insecure 1 }
         if {$insecure eq "false"} { set insecure 0 }
 
-        # Check session limit
-        if {[::mcp::session::at_limit]} {
-            return [_tool_error "Session limit reached"]
+        # Generate session_id first (so we can route to worker)
+        set session_id [::mcp::util::generate_id "sess"]
+
+        # Dispatch to thread pool worker
+        ::mcp::log::debug "ssh_connect dispatching to thread pool" [dict create \
+            session_id $session_id \
+            host $host \
+            user $user \
+            port $port \
+        ]
+
+        set result [::mcp::threadpool::dispatch_sync $session_id \
+            worker_connect $host $user $password $insecure $port]
+
+        if {[dict get $result status] eq "error"} {
+            set elapsed [expr {[clock milliseconds] - $start_time}]
+            ::mcp::log::error "ssh_connect FAILED" [dict create \
+                error [dict get $result message] \
+                elapsed_ms $elapsed \
+                mcp_session $mcp_session_id \
+            ]
+            # Remove session mapping on failure
+            ::mcp::threadpool::remove_session $session_id
+            return [_tool_error [dict get $result message]]
         }
 
-        # Perform SSH connection (uses existing lib)
-        if {[catch {
-            set spawn_id [::connection::ssh::connect $host $user $password $insecure]
-        } err]} {
-            return [_tool_error "SSH connection failed: $err"]
-        }
+        set total_elapsed [expr {[clock milliseconds] - $start_time}]
+        ::mcp::log::info "ssh_connect SUCCESS" [dict create \
+            session_id $session_id \
+            total_ms $total_elapsed \
+            worker [::mcp::threadpool::get_worker_index $session_id] \
+        ]
 
-        if {$spawn_id == 0} {
-            return [_tool_error "SSH connection failed"]
-        }
-
-        # Initialize prompt
-        ::prompt::init $spawn_id 0
-
-        # Create session
-        set session_id [::mcp::session::create $spawn_id $host $user $mcp_session_id]
+        # Track session in main thread for ownership verification
+        ::mcp::session::create_threadpool $session_id $host $user $mcp_session_id
 
         # Associate with MCP session
         ::mcp::mcp_session::add_ssh_session $mcp_session_id $session_id
@@ -371,6 +390,7 @@ namespace eval ::mcp::tools {
 
     #=========================================================================
     # ssh_disconnect (Lines 245-280)
+    # Now uses thread pool for disconnect
     #=========================================================================
 
     proc tool_ssh_disconnect {args mcp_session_id} {
@@ -380,7 +400,7 @@ namespace eval ::mcp::tools {
 
         set session_id [dict get $args session_id]
 
-        # Get session
+        # Get session from main thread tracking
         set session [::mcp::session::get $session_id]
         if {$session eq {}} {
             return [_tool_error "Session not found: $session_id"]
@@ -391,16 +411,18 @@ namespace eval ::mcp::tools {
             return [_tool_error "Session not owned by this client"]
         }
 
-        # Get spawn_id and disconnect
-        set spawn_id [dict get $session spawn_id]
         set host [dict get $session host]
 
-        catch {::connection::ssh::disconnect $spawn_id}
+        # Dispatch disconnect to thread pool worker
+        ::mcp::threadpool::dispatch_sync $session_id worker_disconnect
+
+        # Remove session mapping from thread pool
+        ::mcp::threadpool::remove_session $session_id
 
         # Remove from MCP session
         ::mcp::mcp_session::remove_ssh_session $mcp_session_id $session_id
 
-        # Delete session
+        # Delete session from main thread tracking
         ::mcp::session::delete $session_id
 
         # Update metrics
@@ -413,6 +435,7 @@ namespace eval ::mcp::tools {
 
     #=========================================================================
     # ssh_run_command (Lines 285-345)
+    # Now uses thread pool for command execution
     #=========================================================================
 
     proc tool_ssh_run_command {args mcp_session_id} {
@@ -426,7 +449,7 @@ namespace eval ::mcp::tools {
         set session_id [dict get $args session_id]
         set command [dict get $args command]
 
-        # Get session
+        # Get session from main thread tracking
         set session [::mcp::session::get $session_id]
         if {$session eq {}} {
             return [_tool_error "Session not found: $session_id"]
@@ -437,29 +460,31 @@ namespace eval ::mcp::tools {
             return [_tool_error "Session not owned by this client"]
         }
 
-        # SECURITY: Validate command through allowlist
+        # SECURITY: Validate command through allowlist (in main thread)
         if {[catch {::mcp::security::validate_command $command} err]} {
             ::mcp::metrics::counter_inc "mcp_ssh_commands_blocked" 1
             return [_tool_error "Command not permitted: $err"]
         }
 
-        # Get spawn_id and run command
-        set spawn_id [dict get $session spawn_id]
         set host [dict get $session host]
         set start_time [clock milliseconds]
 
-        if {[catch {
-            set output [::prompt::run $spawn_id $command]
-        } err]} {
-            return [_tool_error "Command execution failed: $err"]
+        # Dispatch to thread pool worker
+        set result [::mcp::threadpool::dispatch_sync $session_id \
+            worker_run_command $command]
+
+        if {[dict get $result status] eq "error"} {
+            return [_tool_error [dict get $result message]]
         }
+
+        set output [dict get $result output]
 
         set duration [expr {([clock milliseconds] - $start_time) / 1000.0}]
         ::mcp::metrics::histogram_observe "mcp_ssh_command_duration_seconds" $duration \
             [list host $host]
         ::mcp::metrics::counter_inc "mcp_ssh_commands_total" 1 [list host $host status "success"]
 
-        # Update last_used
+        # Update last_used in main thread tracking
         ::mcp::session::update $session_id [dict create last_used_at [clock milliseconds]]
 
         return [dict create \
@@ -469,6 +494,7 @@ namespace eval ::mcp::tools {
 
     #=========================================================================
     # ssh_cat_file (Lines 350-420)
+    # Now uses thread pool for command execution
     #=========================================================================
 
     proc tool_ssh_cat_file {args mcp_session_id} {
@@ -484,7 +510,7 @@ namespace eval ::mcp::tools {
         set encoding [expr {[dict exists $args encoding] ? [dict get $args encoding] : "auto"}]
         set max_size [expr {[dict exists $args max_size] ? [dict get $args max_size] : 1048576}]
 
-        # Get session
+        # Get session from main thread tracking
         set session [::mcp::session::get $session_id]
         if {$session eq {}} {
             return [_tool_error "Session not found: $session_id"]
@@ -511,14 +537,15 @@ namespace eval ::mcp::tools {
             return [_tool_error "Command not permitted: $err"]
         }
 
-        # Execute
-        set spawn_id [dict get $session spawn_id]
+        # Dispatch to thread pool worker
+        set result [::mcp::threadpool::dispatch_sync $session_id \
+            worker_run_command $cmd]
 
-        if {[catch {
-            set output [::prompt::run $spawn_id $cmd]
-        } err]} {
-            return [_tool_error "Failed to read file: $err"]
+        if {[dict get $result status] eq "error"} {
+            return [_tool_error "Failed to read file: [dict get $result message]"]
         }
+
+        set output [dict get $result output]
 
         # Detect encoding
         set detected_encoding "text"
@@ -544,6 +571,7 @@ namespace eval ::mcp::tools {
 
     #=========================================================================
     # ssh_hostname (Lines 425-460)
+    # Now uses thread pool for command execution
     #=========================================================================
 
     proc tool_ssh_hostname {args mcp_session_id} {
@@ -553,7 +581,7 @@ namespace eval ::mcp::tools {
 
         set session_id [dict get $args session_id]
 
-        # Get session
+        # Get session from main thread tracking
         set session [::mcp::session::get $session_id]
         if {$session eq {}} {
             return [_tool_error "Session not found: $session_id"]
@@ -564,15 +592,15 @@ namespace eval ::mcp::tools {
             return [_tool_error "Session not owned by this client"]
         }
 
-        set spawn_id [dict get $session spawn_id]
+        # Dispatch to thread pool worker
+        set result [::mcp::threadpool::dispatch_sync $session_id \
+            worker_run_command "hostname"]
 
-        if {[catch {
-            set output [::prompt::run $spawn_id "hostname"]
-        } err]} {
-            return [_tool_error "Failed to get hostname: $err"]
+        if {[dict get $result status] eq "error"} {
+            return [_tool_error "Failed to get hostname: [dict get $result message]"]
         }
 
-        set hostname [string trim $output]
+        set hostname [string trim [dict get $result output]]
 
         return [dict create \
             content [list [dict create type "text" text $hostname]] \
@@ -638,6 +666,7 @@ namespace eval ::mcp::tools {
 
     #=========================================================================
     # ssh_network_interfaces (Lines 530-600)
+    # Now uses thread pool for command execution
     #=========================================================================
 
     proc tool_ssh_network_interfaces {args mcp_session_id} {
@@ -659,8 +688,6 @@ namespace eval ::mcp::tools {
             return [_tool_error "Session not owned by this client"]
         }
 
-        set spawn_id [dict get $session spawn_id]
-
         # Build command
         if {$include_stats} {
             set cmd "ip -j -s link show"
@@ -675,13 +702,15 @@ namespace eval ::mcp::tools {
             append cmd " dev $interface"
         }
 
-        # Validate and execute
+        # Validate command
         if {[catch {::mcp::security::validate_command $cmd} err]} {
             return [_tool_error "Command not permitted: $err"]
         }
 
-        if {[catch {set output [::prompt::run $spawn_id $cmd]} err]} {
-            return [_tool_error "Failed to get interfaces: $err"]
+        # Execute via thread pool
+        lassign [_run_command_via_threadpool $session_id $cmd] status output
+        if {$status eq "error"} {
+            return [_tool_error "Failed to get interfaces: $output"]
         }
 
         return [dict create \
@@ -692,6 +721,7 @@ namespace eval ::mcp::tools {
 
     #=========================================================================
     # ssh_network_routes (Lines 605-660)
+    # Now uses thread pool for command execution
     #=========================================================================
 
     proc tool_ssh_network_routes {args mcp_session_id} {
@@ -712,8 +742,6 @@ namespace eval ::mcp::tools {
             return [_tool_error "Session not owned by this client"]
         }
 
-        set spawn_id [dict get $session spawn_id]
-
         # Build command based on family
         set results [dict create]
 
@@ -722,10 +750,11 @@ namespace eval ::mcp::tools {
             if {[catch {::mcp::security::validate_command $cmd}]} {
                 return [_tool_error "Command not permitted"]
             }
-            if {[catch {set ipv4_output [::prompt::run $spawn_id $cmd]} err]} {
-                dict set results ipv4 [dict create error $err]
+            lassign [_run_command_via_threadpool $session_id $cmd] status output
+            if {$status eq "error"} {
+                dict set results ipv4 [dict create error $output]
             } else {
-                dict set results ipv4 $ipv4_output
+                dict set results ipv4 $output
             }
         }
 
@@ -734,10 +763,11 @@ namespace eval ::mcp::tools {
             if {[catch {::mcp::security::validate_command $cmd}]} {
                 return [_tool_error "Command not permitted"]
             }
-            if {[catch {set ipv6_output [::prompt::run $spawn_id $cmd]} err]} {
-                dict set results ipv6 [dict create error $err]
+            lassign [_run_command_via_threadpool $session_id $cmd] status output
+            if {$status eq "error"} {
+                dict set results ipv6 [dict create error $output]
             } else {
-                dict set results ipv6 $ipv6_output
+                dict set results ipv6 $output
             }
         }
 
@@ -760,6 +790,7 @@ namespace eval ::mcp::tools {
 
     #=========================================================================
     # ssh_network_firewall (Lines 665-750)
+    # Now uses thread pool for command execution
     #=========================================================================
 
     proc tool_ssh_network_firewall {args mcp_session_id} {
@@ -782,7 +813,6 @@ namespace eval ::mcp::tools {
             return [_tool_error "Session not owned by this client"]
         }
 
-        set spawn_id [dict get $session spawn_id]
         set detected_format ""
 
         # Auto-detect firewall type
@@ -792,7 +822,8 @@ namespace eval ::mcp::tools {
             if {[catch {::mcp::security::validate_command $test_cmd}]} {
                 set format "iptables"
             } else {
-                if {[catch {set test_output [::prompt::run $spawn_id $test_cmd]}]} {
+                lassign [_run_command_via_threadpool $session_id $test_cmd] status test_output
+                if {$status eq "error"} {
                     set format "iptables"
                 } elseif {[string match "*table*" $test_output]} {
                     set format "nft"
@@ -824,8 +855,9 @@ namespace eval ::mcp::tools {
             return [_tool_error "Command not permitted: $err"]
         }
 
-        if {[catch {set output [::prompt::run $spawn_id $cmd]} err]} {
-            return [_tool_error "Failed to get firewall rules: $err"]
+        lassign [_run_command_via_threadpool $session_id $cmd] status output
+        if {$status eq "error"} {
+            return [_tool_error "Failed to get firewall rules: $output"]
         }
 
         # Handle large output
@@ -840,6 +872,7 @@ namespace eval ::mcp::tools {
 
     #=========================================================================
     # ssh_network_qdisc (Lines 755-810)
+    # Now uses thread pool for command execution
     #=========================================================================
 
     proc tool_ssh_network_qdisc {args mcp_session_id} {
@@ -861,8 +894,6 @@ namespace eval ::mcp::tools {
             return [_tool_error "Session not owned by this client"]
         }
 
-        set spawn_id [dict get $session spawn_id]
-
         # Build command
         if {$include_stats} {
             set cmd "tc -j -s qdisc show"
@@ -880,8 +911,9 @@ namespace eval ::mcp::tools {
             return [_tool_error "Command not permitted: $err"]
         }
 
-        if {[catch {set output [::prompt::run $spawn_id $cmd]} err]} {
-            return [_tool_error "Failed to get qdisc info: $err"]
+        lassign [_run_command_via_threadpool $session_id $cmd] status output
+        if {$status eq "error"} {
+            return [_tool_error "Failed to get qdisc info: $output"]
         }
 
         return [dict create \
@@ -892,6 +924,7 @@ namespace eval ::mcp::tools {
 
     #=========================================================================
     # ssh_network_connectivity (Lines 815-910)
+    # Now uses thread pool for command execution
     #=========================================================================
 
     proc tool_ssh_network_connectivity {args mcp_session_id} {
@@ -930,7 +963,6 @@ namespace eval ::mcp::tools {
             return [_tool_error "Session not owned by this client"]
         }
 
-        set spawn_id [dict get $session spawn_id]
         set results [dict create]
 
         # Run requested tests
@@ -938,10 +970,13 @@ namespace eval ::mcp::tools {
             set cmd "dig +short $target"
             if {[catch {::mcp::security::validate_command $cmd}]} {
                 dict set results dns [dict create error "Command not permitted"]
-            } elseif {[catch {set dns_output [::prompt::run $spawn_id $cmd]} err]} {
-                dict set results dns [dict create error $err]
             } else {
-                dict set results dns [dict create output [string trim $dns_output] success 1]
+                lassign [_run_command_via_threadpool $session_id $cmd] status dns_output
+                if {$status eq "error"} {
+                    dict set results dns [dict create error $dns_output]
+                } else {
+                    dict set results dns [dict create output [string trim $dns_output] success 1]
+                }
             }
         }
 
@@ -949,10 +984,13 @@ namespace eval ::mcp::tools {
             set cmd "ping -c $ping_count $target"
             if {[catch {::mcp::security::validate_command $cmd}]} {
                 dict set results ping [dict create error "Command not permitted"]
-            } elseif {[catch {set ping_output [::prompt::run $spawn_id $cmd]} err]} {
-                dict set results ping [dict create error $err]
             } else {
-                dict set results ping [dict create output $ping_output success 1]
+                lassign [_run_command_via_threadpool $session_id $cmd] status ping_output
+                if {$status eq "error"} {
+                    dict set results ping [dict create error $ping_output]
+                } else {
+                    dict set results ping [dict create output $ping_output success 1]
+                }
             }
         }
 
@@ -960,10 +998,13 @@ namespace eval ::mcp::tools {
             set cmd "traceroute -m $traceroute_hops $target"
             if {[catch {::mcp::security::validate_command $cmd}]} {
                 dict set results traceroute [dict create error "Command not permitted"]
-            } elseif {[catch {set tr_output [::prompt::run $spawn_id $cmd]} err]} {
-                dict set results traceroute [dict create error $err]
             } else {
-                dict set results traceroute [dict create output $tr_output success 1]
+                lassign [_run_command_via_threadpool $session_id $cmd] status tr_output
+                if {$status eq "error"} {
+                    dict set results traceroute [dict create error $tr_output]
+                } else {
+                    dict set results traceroute [dict create output $tr_output success 1]
+                }
             }
         }
 
@@ -987,6 +1028,7 @@ namespace eval ::mcp::tools {
 
     #=========================================================================
     # ssh_batch_commands (Lines 915-990)
+    # Now uses thread pool for command execution
     #=========================================================================
 
     proc tool_ssh_batch_commands {args mcp_session_id} {
@@ -1026,15 +1068,15 @@ namespace eval ::mcp::tools {
             }
         }
 
-        set spawn_id [dict get $session spawn_id]
         set results [list]
         set all_success 1
 
-        # Execute commands sequentially
+        # Execute commands sequentially via thread pool
         foreach cmd $commands {
             set result [dict create command $cmd]
-            if {[catch {set output [::prompt::run $spawn_id $cmd]} err]} {
-                dict set result error $err
+            lassign [_run_command_via_threadpool $session_id $cmd] status output
+            if {$status eq "error"} {
+                dict set result error $output
                 dict set result success 0
                 set all_success 0
                 lappend results $result
@@ -1072,6 +1114,7 @@ namespace eval ::mcp::tools {
 
     #=========================================================================
     # ssh_network_compare (Lines 1000-1080)
+    # Now uses thread pool for command execution
     #=========================================================================
 
     proc tool_ssh_network_compare {args mcp_session_id} {
@@ -1095,8 +1138,6 @@ namespace eval ::mcp::tools {
             return [_tool_error "Session not owned by this client"]
         }
 
-        set spawn_id [dict get $session spawn_id]
-
         # Collect current state based on scope
         set current_state [dict create timestamp [clock seconds]]
 
@@ -1104,10 +1145,13 @@ namespace eval ::mcp::tools {
             set cmd "ip -j addr show"
             if {[catch {::mcp::security::validate_command $cmd}]} {
                 dict set current_state interfaces_error "Command not permitted"
-            } elseif {[catch {set output [::prompt::run $spawn_id $cmd]} err]} {
-                dict set current_state interfaces_error $err
             } else {
-                dict set current_state interfaces $output
+                lassign [_run_command_via_threadpool $session_id $cmd] status output
+                if {$status eq "error"} {
+                    dict set current_state interfaces_error $output
+                } else {
+                    dict set current_state interfaces $output
+                }
             }
         }
 
@@ -1115,10 +1159,13 @@ namespace eval ::mcp::tools {
             set cmd "ip -j route show"
             if {[catch {::mcp::security::validate_command $cmd}]} {
                 dict set current_state routes_error "Command not permitted"
-            } elseif {[catch {set output [::prompt::run $spawn_id $cmd]} err]} {
-                dict set current_state routes_error $err
             } else {
-                dict set current_state routes $output
+                lassign [_run_command_via_threadpool $session_id $cmd] status output
+                if {$status eq "error"} {
+                    dict set current_state routes_error $output
+                } else {
+                    dict set current_state routes $output
+                }
             }
         }
 
@@ -1211,6 +1258,21 @@ namespace eval ::mcp::tools {
             content [list [dict create type "text" text $message]] \
             isError true \
         ]
+    }
+
+    # Helper to run a command via thread pool and return output or error
+    # @param session_id Session to run command on
+    # @param command Command to execute
+    # @return {status output} where status is "ok" or "error"
+    proc _run_command_via_threadpool {session_id command} {
+        set result [::mcp::threadpool::dispatch_sync $session_id \
+            worker_run_command $command]
+
+        if {[dict get $result status] eq "error"} {
+            return [list error [dict get $result message]]
+        }
+
+        return [list ok [dict get $result output]]
     }
 
     proc _verify_session_owner {session_id mcp_session_id} {

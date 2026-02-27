@@ -103,6 +103,61 @@ The hybrid approach is more maintainable:
 - Patches for complex/selective changes that need precise context
 - sed for simple patterns that can be reliably matched globally
 
+## Critical Bug Found: 64-bit Buffer Truncation
+
+### The Problem
+
+While the initial patches allowed `match_max` to accept values >2GB, the actual buffer
+allocation would silently truncate to 32-bit. The value chain was:
+
+```
+match_max 4000000000     [Tcl_WideInt - 64-bit] ✓ patched
+       ↓
+exp_default_match_max    [Tcl_WideInt - 64-bit] ✓ patched
+       ↓
+esPtr->umsize            [Tcl_WideInt - 64-bit] ✓ patched
+       ↓
+new_msize = umsize*3+1   [int - 32-bit] ✗ TRUNCATED!
+       ↓
+esPtr->input.max         [int - 32-bit] ✗ TRUNCATED!
+       ↓
+esPtr->input.use         [int - 32-bit] ✗ TRUNCATED!
+```
+
+Tests like "match_max accepts 4GB" passed because they only verified the command
+returned the correct value—they didn't verify the buffer was actually allocated
+at that size.
+
+### The Fix
+
+Added patches in `default.nix` to fix the ExpUniBuf struct and related variables:
+
+```bash
+# Fix ExpUniBuf struct in exp_command.h
+sed -i 's/int          max;.../Tcl_Size     max;.../' exp_command.h
+sed -i 's/int          use;.../Tcl_Size     use;.../' exp_command.h
+
+# Fix new_msize computation in expect.c
+sed -i 's/int new_msize, excess;/Tcl_Size new_msize, excess;/' expect.c
+
+# Fix numchars variables
+sed -i 's/int numchars,.../Tcl_Size numchars,.../' expect.c
+```
+
+### Tests Added
+
+New tests in `tcl9-extreme.test` that catch truncation:
+
+- `extreme-huge-7.6`: Verifies 4GB match_max survives spawn/close cycle
+- `extreme-huge-7.7`: Tests exactly at INT32_MAX+1 boundary (2,147,483,648)
+- `extreme-huge-7.8`: Tests exactly at UINT32_MAX+1 boundary (4,294,967,296)
+
+### Lesson Learned
+
+The compiler warnings `-Wno-incompatible-pointer-types -Wno-int-conversion` were
+hiding the truncation bugs. The tests only verified API acceptance, not actual
+behavior with large values.
+
 ## References
 
 - [Tcl 9.0 Porting Guide](https://wiki.tcl-lang.org/page/Porting+extensions+to+Tcl+9)
