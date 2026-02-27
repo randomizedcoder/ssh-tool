@@ -20,11 +20,11 @@
   debugMode ? false,
 }:
 let
-  # Import modular constants
-  network = import ./constants/network.nix;
-  ports = import ./constants/ports.nix;
-  users = import ./constants/users.nix;
-  timeouts = import ./constants/timeouts.nix;
+  constants = import ./constants;
+  network = constants.network;
+  ports = constants.ports;
+  users = constants.users;
+  resources = constants.resources.profiles.default;
 
   # Expect with Tcl 9.0 support
   # TODO: Replace with pkgs.tclPackages_9_0.expect after PR #490930 merges
@@ -39,92 +39,59 @@ let
     modules = [
       microvm.nixosModules.microvm
 
+      # Import shared modules
+      ./modules/vm-base.nix
+      ./modules/vm-networking.nix
+      ./modules/vm-users.nix
+
       (
         { config, pkgs, ... }:
         {
-          system.stateVersion = "24.05";
           nixpkgs.hostPlatform = system;
 
-          # ─── MicroVM Configuration ─────────────────────────────────────
-          microvm = {
-            hypervisor = "qemu";
-            mem = users.vmResources.mcp.memoryMB;
-            vcpu = users.vmResources.mcp.vcpus;
+          # ─── VM Base Configuration ───────────────────────────────────────
+          vmBase = {
+            vmName = "mcp-vm";
+            serialPort = ports.console.mcpSerial;
+            virtioPort = ports.console.mcpVirtio;
+            memoryMB = resources.mcp.memoryMB;
+            vcpus = resources.mcp.vcpus;
+          };
 
-            shares = [
+          # ─── Networking ──────────────────────────────────────────────────
+          vmNetworking = {
+            inherit useTap;
+            tapDevice = network.tapMcp;
+            macAddress = network.mcpVmMac;
+            ipAddress = network.mcpVmIp;
+            gateway = network.gateway;
+            hostPorts = [
               {
-                tag = "ro-store";
-                source = "/nix/store";
-                mountPoint = "/nix/.ro-store";
-                proto = "9p";
-              }
-            ];
-
-            interfaces =
-              if useTap then
-                [
-                  {
-                    type = "tap";
-                    id = network.tapMcp;
-                    mac = network.mcpVmMac;
-                  }
-                ]
-              else
-                [
-                  {
-                    type = "user";
-                    id = "eth0";
-                    mac = network.mcpVmMac;
-                  }
-                ];
-
-            forwardPorts = lib.optionals (!useTap) [
-              {
-                from = "host";
-                host.port = ports.mcpForward;
-                guest.port = 3000;
+                host = ports.mcpForward;
+                guest = 3000;
               }
               {
-                from = "host";
-                host.port = ports.sshForwardMcp;
-                guest.port = 22;
+                host = ports.sshForwardMcp;
+                guest = 22;
               }
             ];
           };
 
-          # ─── Networking ────────────────────────────────────────────────
           networking.hostName = "mcp-vm";
           networking.firewall.allowedTCPPorts = [
             22
             3000
           ];
 
-          networking.interfaces = lib.mkIf useTap {
-            eth0 = {
-              useDHCP = false;
-              ipv4.addresses = [
-                {
-                  address = network.mcpVmIp;
-                  prefixLength = 24;
-                }
-              ];
-            };
-          };
-          networking.defaultGateway = lib.mkIf useTap {
-            address = network.gateway;
-            interface = "eth0";
+          # ─── Users ───────────────────────────────────────────────────────
+          vmUsers = {
+            testUserPassword = users.testuser.password;
+            enableDebugRoot = debugMode;
+            rootPassword = users.root.password;
+            enablePasswordAuth = debugMode;
           };
 
-          # ─── SSH Server ────────────────────────────────────────────────
-          services.openssh = {
-            enable = true;
-            settings = {
-              PasswordAuthentication = debugMode;
-              PermitRootLogin = if debugMode then "yes" else "prohibit-password";
-            };
-          };
-
-          # ─── Packages ──────────────────────────────────────────────────
+          # ─── Packages ────────────────────────────────────────────────────
           environment.systemPackages = with pkgs; [
             expect-tcl9
             tcl-9_0
@@ -133,34 +100,25 @@ let
             openssh
           ];
 
-          # ─── Test User ─────────────────────────────────────────────────
-          users.users.testuser = {
-            isNormalUser = true;
-            password = users.testuser.password;
-            extraGroups = [ "wheel" ];
-          };
-
-          users.users.root.password = lib.mkIf debugMode users.root.password;
-
-          security.sudo.wheelNeedsPassword = false;
-
-          # ─── MCP Server Service ────────────────────────────────────────
+          # ─── MCP Server Service ──────────────────────────────────────────
           # Uses `self` to run the exact code from the flake's commit.
           # This ensures reproducibility - the VM always runs the committed version.
           systemd.services.mcp-server = {
             description = "MCP SSH Automation Server";
             wantedBy = [ "multi-user.target" ];
             after = [ "network.target" ];
+            # Add openssh to PATH so expect can spawn ssh
+            path = [ pkgs.openssh ];
             serviceConfig = {
               Type = "simple";
               # Use flake's self-reference for source
-              ExecStart = "${expect-tcl9}/bin/expect ${self}/mcp/server.tcl --port 3000 --bind 0.0.0.0";
+              ExecStart = "${expect-tcl9}/bin/expect ${self}/mcp/server.tcl --port 3000 --bind 0.0.0.0 --debug DEBUG";
               Restart = "always";
               WorkingDirectory = "${self}";
             };
           };
 
-          # ─── MOTD ──────────────────────────────────────────────────────
+          # ─── MOTD ────────────────────────────────────────────────────────
           environment.etc."motd".text =
             if debugMode then
               ''

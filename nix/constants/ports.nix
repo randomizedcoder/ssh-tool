@@ -20,4 +20,21 @@
   # Degraded ports = base port + offset
   # e.g., 2222 + 100 = 2322 (with network emulation)
   netemOffset = 100;
+
+  # Serial console ports for VM debugging
+  # Each VM gets two console ports: slow (ttyS0) and fast (hvc0/virtio)
+  # Connect with: nc localhost <port> or socat - TCP:localhost:<port>
+  console = {
+    # Agent VM consoles
+    agentSerial = 4100; # ttyS0 (slow, but works early in boot)
+    agentVirtio = 4101; # hvc0 (fast virtio console)
+
+    # MCP VM consoles
+    mcpSerial = 4110; # ttyS0
+    mcpVirtio = 4111; # hvc0
+
+    # Target VM consoles
+    targetSerial = 4120; # ttyS0
+    targetVirtio = 4121; # hvc0
+  };
 }

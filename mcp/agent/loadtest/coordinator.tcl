@@ -49,7 +49,8 @@ namespace eval ::loadtest::coordinator {
         variable test_id
 
         set run_dir [file join $results_dir $test_id]
-        set worker_script [file join [file dirname [info script]] worker.tcl]
+        # Use absolute path so worker can be run from any cwd
+        set worker_script [file normalize [file join [file dirname [info script]] worker.tcl]]
 
         set pids [list]
 

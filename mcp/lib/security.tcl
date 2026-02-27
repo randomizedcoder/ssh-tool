@@ -250,7 +250,7 @@ namespace eval ::mcp::security {
     #=========================================================================
 
     variable rate_limits    ;# dict: client_id -> {count reset_time}
-    variable rate_limit 100 ;# requests per minute
+    variable rate_limit 1000 ;# requests per minute (increased for parallel/load testing)
     variable rate_window 60 ;# seconds
 
     #=========================================================================

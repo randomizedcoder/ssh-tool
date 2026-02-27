@@ -37,7 +37,7 @@ in
       # Create TAP for Agent VM
       if ! ip link show ${network.tapAgent} &>/dev/null; then
         echo "Creating TAP ${network.tapAgent} for Agent VM..."
-        sudo ip tuntap add dev ${network.tapAgent} mode tap user "$USER"
+        sudo ip tuntap add dev ${network.tapAgent} mode tap multi_queue user "''${SUDO_USER:-$USER}"
         sudo ip link set ${network.tapAgent} master ${network.bridge}
         sudo ip link set ${network.tapAgent} up
       else
@@ -47,7 +47,7 @@ in
       # Create TAP for MCP VM
       if ! ip link show ${network.tapMcp} &>/dev/null; then
         echo "Creating TAP ${network.tapMcp} for MCP VM..."
-        sudo ip tuntap add dev ${network.tapMcp} mode tap user "$USER"
+        sudo ip tuntap add dev ${network.tapMcp} mode tap multi_queue user "''${SUDO_USER:-$USER}"
         sudo ip link set ${network.tapMcp} master ${network.bridge}
         sudo ip link set ${network.tapMcp} up
       else
@@ -57,7 +57,7 @@ in
       # Create TAP for target VM
       if ! ip link show ${network.tapTarget} &>/dev/null; then
         echo "Creating TAP ${network.tapTarget} for target VM..."
-        sudo ip tuntap add dev ${network.tapTarget} mode tap user "$USER"
+        sudo ip tuntap add dev ${network.tapTarget} mode tap multi_queue user "''${SUDO_USER:-$USER}"
         sudo ip link set ${network.tapTarget} master ${network.bridge}
         sudo ip link set ${network.tapTarget} up
       else

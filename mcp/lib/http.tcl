@@ -98,6 +98,10 @@ namespace eval ::mcp::http {
 
     # Handle readable event
     proc _handle_readable {chan addr} {
+        set request_start [clock milliseconds]
+        set request_id [format "%08x" [expr {int(rand() * 0xFFFFFFFF)}]]
+        ::mcp::log::debug "HTTP request START" [dict create request_id $request_id addr $addr]
+
         if {[catch {
             # Read request
             set request [_read_request $chan]
@@ -119,8 +123,14 @@ namespace eval ::mcp::http {
                 return
             }
 
+            set dispatch_start [clock milliseconds]
+            ::mcp::log::debug "HTTP dispatch START" [dict create request_id $request_id method [dict get $parsed method]]
+
             # Handle request
             set response [_dispatch $parsed $addr]
+
+            set dispatch_elapsed [expr {[clock milliseconds] - $dispatch_start}]
+            ::mcp::log::debug "HTTP dispatch END" [dict create request_id $request_id dispatch_ms $dispatch_elapsed]
 
             # Send response
             _send_response $chan $response
@@ -128,8 +138,11 @@ namespace eval ::mcp::http {
             # Close connection (HTTP/1.0 style for simplicity)
             close $chan
 
+            set total_elapsed [expr {[clock milliseconds] - $request_start}]
+            ::mcp::log::debug "HTTP request END" [dict create request_id $request_id total_ms $total_elapsed]
+
         } err]} {
-            _log_error "Request handling error" [dict create error $err addr $addr]
+            _log_error "Request handling error" [dict create error $err addr $addr request_id $request_id]
             catch {
                 _send_error $chan 500 "Internal Server Error"
                 close $chan
@@ -145,9 +158,11 @@ namespace eval ::mcp::http {
 
         # Read headers
         while {[gets $chan line] >= 0} {
+            # Strip trailing \r if present (binary mode doesn't strip it)
+            set line [string trimright $line "\r"]
             append request "$line\r\n"
 
-            if {$line eq "" || $line eq "\r"} {
+            if {$line eq ""} {
                 set headers_done 1
                 break
             }
@@ -164,7 +179,10 @@ namespace eval ::mcp::http {
 
         # Read body if present
         if {$content_length > 0} {
+            # Temporarily switch to blocking mode to ensure we read all data
+            fconfigure $chan -blocking 1
             set body [read $chan $content_length]
+            fconfigure $chan -blocking 0
             append request $body
         }
 

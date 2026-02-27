@@ -19,9 +19,11 @@
   debugMode ? false,
 }:
 let
-  network = import ./constants/network.nix;
-  ports = import ./constants/ports.nix;
-  users = import ./constants/users.nix;
+  constants = import ./constants;
+  network = constants.network;
+  ports = constants.ports;
+  users = constants.users;
+  resources = constants.resources.profiles.default;
 
   useTap = networking == "tap";
 
@@ -32,84 +34,52 @@ let
     modules = [
       microvm.nixosModules.microvm
 
+      # Import shared modules
+      ./modules/vm-base.nix
+      ./modules/vm-networking.nix
+      ./modules/vm-users.nix
+
       (
         { config, pkgs, ... }:
         {
-          system.stateVersion = "24.05";
           nixpkgs.hostPlatform = system;
 
-          # ─── MicroVM Configuration ─────────────────────────────────────
-          microvm = {
-            hypervisor = "qemu";
-            mem = users.vmResources.agent.memoryMB;
-            vcpu = users.vmResources.agent.vcpus;
+          # ─── VM Base Configuration ───────────────────────────────────────
+          vmBase = {
+            vmName = "agent-vm";
+            serialPort = ports.console.agentSerial;
+            virtioPort = ports.console.agentVirtio;
+            memoryMB = resources.agent.memoryMB;
+            vcpus = resources.agent.vcpus;
+          };
 
-            shares = [
+          # ─── Networking ──────────────────────────────────────────────────
+          vmNetworking = {
+            inherit useTap;
+            tapDevice = network.tapAgent;
+            macAddress = network.agentVmMac;
+            ipAddress = network.agentVmIp;
+            gateway = network.gateway;
+            hostPorts = [
               {
-                tag = "ro-store";
-                source = "/nix/store";
-                mountPoint = "/nix/.ro-store";
-                proto = "9p";
-              }
-            ];
-
-            interfaces =
-              if useTap then
-                [
-                  {
-                    type = "tap";
-                    id = network.tapAgent;
-                    mac = network.agentVmMac;
-                  }
-                ]
-              else
-                [
-                  {
-                    type = "user";
-                    id = "eth0";
-                    mac = network.agentVmMac;
-                  }
-                ];
-
-            forwardPorts = lib.optionals (!useTap) [
-              {
-                from = "host";
-                host.port = ports.sshForwardAgent;
-                guest.port = 22;
+                host = ports.sshForwardAgent;
+                guest = 22;
               }
             ];
           };
 
-          # ─── Networking ────────────────────────────────────────────────
           networking.hostName = "agent-vm";
           networking.firewall.allowedTCPPorts = [ 22 ];
 
-          networking.interfaces = lib.mkIf useTap {
-            eth0 = {
-              useDHCP = false;
-              ipv4.addresses = [
-                {
-                  address = network.agentVmIp;
-                  prefixLength = 24;
-                }
-              ];
-            };
-          };
-          networking.defaultGateway = lib.mkIf useTap {
-            address = network.gateway;
-            interface = "eth0";
+          # ─── Users ───────────────────────────────────────────────────────
+          vmUsers = {
+            testUserPassword = users.testuser.password;
+            enableDebugRoot = debugMode;
+            rootPassword = users.root.password;
+            enablePasswordAuth = debugMode;
           };
 
-          # ─── SSH Server (for debug access) ─────────────────────────────
-          services.openssh = {
-            enable = true;
-            settings = {
-              PasswordAuthentication = debugMode;
-              PermitRootLogin = if debugMode then "yes" else "prohibit-password";
-            };
-          };
-
-          # ─── Packages ──────────────────────────────────────────────────
+          # ─── Packages ────────────────────────────────────────────────────
           environment.systemPackages = with pkgs; [
             tcl-9_0
             curl
@@ -117,25 +87,14 @@ let
             netcat-gnu
           ];
 
-          # ─── Test User ─────────────────────────────────────────────────
-          users.users.testuser = {
-            isNormalUser = true;
-            password = users.testuser.password;
-            extraGroups = [ "wheel" ];
-          };
-
-          users.users.root.password = lib.mkIf debugMode users.root.password;
-
-          security.sudo.wheelNeedsPassword = false;
-
-          # ─── Agent Source ──────────────────────────────────────────────
+          # ─── Agent Source ────────────────────────────────────────────────
           # Copy agent scripts to /opt/agent
           environment.etc."agent/http_client.tcl".source = "${self}/mcp/agent/http_client.tcl";
           environment.etc."agent/json.tcl".source = "${self}/mcp/agent/json.tcl";
           environment.etc."agent/mcp_client.tcl".source = "${self}/mcp/agent/mcp_client.tcl";
           environment.etc."agent/e2e_test.tcl".source = "${self}/mcp/agent/e2e_test.tcl";
 
-          # ─── Test Runner Script ────────────────────────────────────────
+          # ─── Test Runner Script ──────────────────────────────────────────
           environment.etc."agent/run-tests.sh" = {
             mode = "0755";
             text = ''
@@ -145,7 +104,7 @@ let
             '';
           };
 
-          # ─── Debug Mode: Auto-run Tests ────────────────────────────────
+          # ─── Debug Mode: Auto-run Tests ──────────────────────────────────
           systemd.services.agent-test = lib.mkIf debugMode {
             description = "MCP Agent E2E Tests";
             wantedBy = [ "multi-user.target" ];
@@ -163,7 +122,7 @@ let
             };
           };
 
-          # ─── MOTD ──────────────────────────────────────────────────────
+          # ─── MOTD ────────────────────────────────────────────────────────
           environment.etc."motd".text = ''
             ╔═══════════════════════════════════════════════════════════════╗
             ║  Agent-VM: TCL MCP Test Agent                                 ║

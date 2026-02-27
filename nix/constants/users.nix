@@ -64,19 +64,7 @@
     description = "Root user for port 2228 testing";
   };
 
-  # VM resource allocation
-  vmResources = {
-    agent = {
-      memoryMB = 256;
-      vcpus = 1;
-    };
-    mcp = {
-      memoryMB = 512;
-      vcpus = 2;
-    };
-    target = {
-      memoryMB = 512;
-      vcpus = 2;
-    };
-  };
+  # VM resource allocation (deprecated - use resources.nix instead)
+  # Kept for backwards compatibility
+  vmResources = (import ./resources.nix).profiles.default;
 }

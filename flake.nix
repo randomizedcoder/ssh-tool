@@ -23,6 +23,21 @@
         pkgs = nixpkgs.legacyPackages.${system};
         lib = pkgs.lib;
         constants = import ./nix/constants;
+
+        # Import library helpers
+        nixLib = import ./nix/lib { inherit pkgs lib; };
+        vmVariants = nixLib.vmVariants;
+        appsLib = nixLib.apps;
+
+        # Base arguments for VM variant generation
+        vmBaseArgs = {
+          inherit
+            pkgs
+            microvm
+            nixpkgs
+            system
+            ;
+        };
       in
       {
         # Formatter for nix files
@@ -32,275 +47,99 @@
         devShells.default = import ./nix/shell.nix { inherit pkgs; };
 
         # MicroVM packages (Linux only)
-        packages = lib.optionalAttrs pkgs.stdenv.isLinux {
-          # Agent VM variants (TCL test client)
-          agent-vm = import ./nix/agent-vm.nix {
-            inherit
-              self
-              pkgs
-              lib
-              microvm
-              nixpkgs
-              system
-              ;
-            networking = "user";
-            debugMode = false;
-          };
-          agent-vm-debug = import ./nix/agent-vm.nix {
-            inherit
-              self
-              pkgs
-              lib
-              microvm
-              nixpkgs
-              system
-              ;
-            networking = "user";
-            debugMode = true;
-          };
-          agent-vm-tap = import ./nix/agent-vm.nix {
-            inherit
-              self
-              pkgs
-              lib
-              microvm
-              nixpkgs
-              system
-              ;
-            networking = "tap";
-            debugMode = false;
-          };
-          agent-vm-tap-debug = import ./nix/agent-vm.nix {
-            inherit
-              self
-              pkgs
-              lib
-              microvm
-              nixpkgs
-              system
-              ;
-            networking = "tap";
-            debugMode = true;
-          };
-
-          # MCP Server VM variants
-          mcp-vm = import ./nix/mcp-vm.nix {
-            inherit
-              self
-              pkgs
-              lib
-              microvm
-              nixpkgs
-              system
-              ;
-            networking = "user";
-            debugMode = false;
-          };
-          mcp-vm-debug = import ./nix/mcp-vm.nix {
-            inherit
-              self
-              pkgs
-              lib
-              microvm
-              nixpkgs
-              system
-              ;
-            networking = "user";
-            debugMode = true;
-          };
-          mcp-vm-tap = import ./nix/mcp-vm.nix {
-            inherit
-              self
-              pkgs
-              lib
-              microvm
-              nixpkgs
-              system
-              ;
-            networking = "tap";
-            debugMode = false;
-          };
-          mcp-vm-tap-debug = import ./nix/mcp-vm.nix {
-            inherit
-              self
-              pkgs
-              lib
-              microvm
-              nixpkgs
-              system
-              ;
-            networking = "tap";
-            debugMode = true;
-          };
-
-          # SSH Target VM variants
-          ssh-target-vm = import ./nix/ssh-target-vm.nix {
-            inherit
-              pkgs
-              lib
-              microvm
-              nixpkgs
-              system
-              ;
-            networking = "user";
-            debugMode = false;
-          };
-          ssh-target-vm-debug = import ./nix/ssh-target-vm.nix {
-            inherit
-              pkgs
-              lib
-              microvm
-              nixpkgs
-              system
-              ;
-            networking = "user";
-            debugMode = true;
-          };
-          ssh-target-vm-tap = import ./nix/ssh-target-vm.nix {
-            inherit
-              pkgs
-              lib
-              microvm
-              nixpkgs
-              system
-              ;
-            networking = "tap";
-            debugMode = false;
-          };
-          ssh-target-vm-tap-debug = import ./nix/ssh-target-vm.nix {
-            inherit
-              pkgs
-              lib
-              microvm
-              nixpkgs
-              system
-              ;
-            networking = "tap";
-            debugMode = true;
-          };
-        };
+        packages = lib.optionalAttrs pkgs.stdenv.isLinux (
+          # Generate all VM variants using the helper
+          (vmVariants.mkVmVariants vmBaseArgs {
+            name = "agent";
+            vmModule = ./nix/agent-vm.nix;
+            extraArgs = { inherit self; };
+          })
+          // (vmVariants.mkVmVariants vmBaseArgs {
+            name = "mcp";
+            vmModule = ./nix/mcp-vm.nix;
+            extraArgs = { inherit self; };
+          })
+          // (vmVariants.mkVmVariants vmBaseArgs {
+            name = "ssh-target";
+            vmModule = ./nix/ssh-target-vm.nix;
+          })
+        );
 
         # Apps (Linux only)
         apps = lib.optionalAttrs pkgs.stdenv.isLinux (
           let
+            # Import all script modules
             networkScripts = import ./nix/network-setup.nix { inherit pkgs; };
             vmScripts = import ./nix/vm-scripts.nix { inherit pkgs; };
             testScripts = import ./nix/tests/e2e-test.nix { inherit pkgs lib; };
             loadtestScripts = import ./nix/tests/loadtest.nix { inherit pkgs lib; };
             networkTestScripts = import ./nix/tests/network-commands-test.nix { inherit pkgs lib; };
+            parallelTestScripts = import ./nix/tests/parallel-test.nix { inherit pkgs lib; };
           in
-          {
-            # VM management
-            ssh-vm-check = {
-              type = "app";
-              program = "${vmScripts.check}/bin/ssh-vm-check";
-            };
-            ssh-vm-stop = {
-              type = "app";
-              program = "${vmScripts.stop}/bin/ssh-vm-stop";
-            };
-            ssh-vm-ssh-agent = {
-              type = "app";
-              program = "${vmScripts.sshAgent}/bin/ssh-vm-ssh-agent";
-            };
-            ssh-vm-ssh-mcp = {
-              type = "app";
-              program = "${vmScripts.sshMcp}/bin/ssh-vm-ssh-mcp";
-            };
-            ssh-vm-ssh-target = {
-              type = "app";
-              program = "${vmScripts.sshTarget}/bin/ssh-vm-ssh-target";
-            };
-
-            # Network setup (for TAP mode)
-            ssh-network-setup = {
-              type = "app";
-              program = "${networkScripts.setup}/bin/ssh-network-setup";
-            };
-            ssh-network-teardown = {
-              type = "app";
-              program = "${networkScripts.teardown}/bin/ssh-network-teardown";
-            };
-
-            # Test runners
-            ssh-test-e2e = {
-              type = "app";
-              program = "${testScripts.e2e}/bin/ssh-test-e2e";
-            };
-            ssh-test-auth = {
-              type = "app";
-              program = "${testScripts.authTests}/bin/ssh-test-auth";
-            };
-            ssh-test-netem = {
-              type = "app";
-              program = "${testScripts.netemTests}/bin/ssh-test-netem";
-            };
-            ssh-test-stability = {
-              type = "app";
-              program = "${testScripts.stabilityTests}/bin/ssh-test-stability";
-            };
-            ssh-test-security = {
-              type = "app";
-              program = "${testScripts.security}/bin/ssh-test-security";
-            };
-            ssh-test-all = {
-              type = "app";
-              program = "${testScripts.all}/bin/ssh-test-all";
-            };
-
-            # Load test runners
-            ssh-loadtest-quick = {
-              type = "app";
-              program = "${loadtestScripts.quick}/bin/ssh-loadtest-quick";
-            };
-            ssh-loadtest = {
-              type = "app";
-              program = "${loadtestScripts.standard}/bin/ssh-loadtest";
-            };
-            ssh-loadtest-full = {
-              type = "app";
-              program = "${loadtestScripts.full}/bin/ssh-loadtest-full";
-            };
-            ssh-loadtest-connection-rate = {
-              type = "app";
-              program = "${loadtestScripts.connectionRate}/bin/ssh-loadtest-connection-rate";
-            };
-            ssh-loadtest-throughput = {
-              type = "app";
-              program = "${loadtestScripts.commandThroughput}/bin/ssh-loadtest-throughput";
-            };
-            ssh-loadtest-latency = {
-              type = "app";
-              program = "${loadtestScripts.latencyTest}/bin/ssh-loadtest-latency";
-            };
-            ssh-loadtest-list = {
-              type = "app";
-              program = "${loadtestScripts.listScenarios}/bin/ssh-loadtest-list";
-            };
-            ssh-loadtest-metrics = {
-              type = "app";
-              program = "${loadtestScripts.scrapeMetrics}/bin/ssh-loadtest-metrics";
-            };
-
-            # Network command test runners
-            # Reference: DESIGN_NETWORK_COMMANDS.md
-            ssh-test-network-inspection = {
-              type = "app";
-              program = "${networkTestScripts.networkInspection}/bin/ssh-test-network-inspection";
-            };
-            ssh-test-network-connectivity = {
-              type = "app";
-              program = "${networkTestScripts.connectivityTests}/bin/ssh-test-connectivity";
-            };
-            ssh-test-network-security = {
-              type = "app";
-              program = "${networkTestScripts.securityBlockedTests}/bin/ssh-test-network-security";
-            };
-            ssh-test-network-all = {
-              type = "app";
-              program = "${networkTestScripts.all}/bin/ssh-test-network-all";
-            };
-          }
+          # VM management apps
+          (appsLib.mkApps {
+            # Status checks
+            ssh-vm-check = vmScripts.check;
+            ssh-vm-status = vmScripts.status;
+            # Start VMs
+            ssh-vm-start-all = vmScripts.startAll;
+            ssh-vm-start-target = vmScripts.startTarget;
+            ssh-vm-start-mcp = vmScripts.startMcp;
+            ssh-vm-start-agent = vmScripts.startAgent;
+            # Stop VMs (graceful)
+            ssh-vm-stop = vmScripts.stop;
+            ssh-vm-stop-target = vmScripts.stopTarget;
+            ssh-vm-stop-mcp = vmScripts.stopMcp;
+            ssh-vm-stop-agent = vmScripts.stopAgent;
+            # Stop VMs (force)
+            ssh-vm-stop-force = vmScripts.stopForce;
+            # Restart VMs
+            ssh-vm-restart-all = vmScripts.restartAll;
+            ssh-vm-restart-mcp = vmScripts.restartMcp;
+            # SSH access
+            ssh-vm-ssh-agent = vmScripts.sshAgent;
+            ssh-vm-ssh-mcp = vmScripts.sshMcp;
+            ssh-vm-ssh-target = vmScripts.sshTarget;
+            # Logs
+            ssh-vm-logs = vmScripts.logs;
+          })
+          # Network setup apps
+          // (appsLib.mkApps {
+            ssh-network-setup = networkScripts.setup;
+            ssh-network-teardown = networkScripts.teardown;
+          })
+          # E2E test apps
+          // (appsLib.mkApps {
+            ssh-test-e2e = testScripts.e2e;
+            ssh-test-auth = testScripts.authTests;
+            ssh-test-netem = testScripts.netemTests;
+            ssh-test-stability = testScripts.stabilityTests;
+            ssh-test-security = testScripts.security;
+            ssh-test-all = testScripts.all;
+          })
+          # Load test apps
+          // (appsLib.mkApps {
+            ssh-loadtest-quick = loadtestScripts.quick;
+            ssh-loadtest = loadtestScripts.standard;
+            ssh-loadtest-full = loadtestScripts.full;
+            ssh-loadtest-connection-rate = loadtestScripts.connectionRate;
+            ssh-loadtest-throughput = loadtestScripts.commandThroughput;
+            ssh-loadtest-latency = loadtestScripts.latencyTest;
+            ssh-loadtest-list = loadtestScripts.listScenarios;
+            ssh-loadtest-metrics = loadtestScripts.scrapeMetrics;
+          })
+          # Network command test apps
+          // (appsLib.mkApps {
+            ssh-test-network-inspection = networkTestScripts.networkInspection;
+            ssh-test-network-connectivity = networkTestScripts.connectivityTests;
+            ssh-test-network-security = networkTestScripts.securityBlockedTests;
+            ssh-test-network-all = networkTestScripts.all;
+          })
+          # Parallel test apps
+          // (appsLib.mkApps {
+            ssh-test-parallel = parallelTestScripts.parallel;
+            ssh-test-parallel-stress = parallelTestScripts.stress;
+          })
         );
 
         # NixOS tests (automated VM orchestration for CI)

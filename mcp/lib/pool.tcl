@@ -9,8 +9,8 @@ namespace eval ::mcp::pool {
     # Pool configuration
     variable config [dict create \
         min_connections     1     \
-        max_connections     10    \
-        spare_connections   2     \
+        max_connections     20    \
+        spare_connections   5     \
         idle_timeout_ms     1800000 \
         health_check_ms     60000   \
         jitter_percent      10      \

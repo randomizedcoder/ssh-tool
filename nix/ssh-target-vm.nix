@@ -21,34 +21,13 @@ let
   users = constants.users;
   sshd = constants.sshd;
   netem = constants.netem;
+  resources = constants.resources.profiles.default;
+
+  # Import library helpers
+  nixLib = import ./lib { inherit pkgs lib; };
+  sshdLib = nixLib.sshdConfig;
 
   useTap = networking == "tap";
-
-  # Generate sshd_config for each daemon
-  # All daemons share the same host keys (different ports, same identity)
-  mkSshdConfig =
-    name: cfg:
-    pkgs.writeText "sshd_config_${name}" ''
-      Port ${toString cfg.port}
-      HostKey /etc/ssh/ssh_host_ed25519_key
-      HostKey /etc/ssh/ssh_host_rsa_key
-
-      PasswordAuthentication ${if cfg.passwordAuth then "yes" else "no"}
-      PubkeyAuthentication ${if cfg.pubkeyAuth then "yes" else "no"}
-      PermitRootLogin ${cfg.permitRootLogin}
-
-      # Logging
-      SyslogFacility AUTH
-      LogLevel INFO
-
-      # Security
-      PermitEmptyPasswords no
-      ChallengeResponseAuthentication no
-      UsePAM yes
-
-      # Subsystems
-      Subsystem sftp ${pkgs.openssh}/libexec/sftp-server
-    '';
 
   # List of all sshd ports (base + netem)
   allSshPorts =
@@ -59,18 +38,16 @@ let
     (lib.flatten (
       lib.mapAttrsToList (name: cfg: [
         {
-          from = "host";
-          host.port = cfg.port;
-          guest.port = cfg.port;
+          host = cfg.port;
+          guest = cfg.port;
         }
       ]) sshd
     ))
     ++ (lib.flatten (
       lib.mapAttrsToList (name: cfg: [
         {
-          from = "host";
-          host.port = cfg.degradedPort;
-          guest.port = cfg.degradedPort;
+          host = cfg.degradedPort;
+          guest = cfg.degradedPort;
         }
       ]) netem
     ));
@@ -82,72 +59,41 @@ let
     modules = [
       microvm.nixosModules.microvm
 
+      # Import shared modules
+      ./modules/vm-base.nix
+      ./modules/vm-networking.nix
+
       (
         { config, pkgs, ... }:
         {
-          system.stateVersion = "24.05";
           nixpkgs.hostPlatform = system;
 
-          # ─── MicroVM Configuration ─────────────────────────────────────
-          microvm = {
-            hypervisor = "qemu";
-            mem = users.vmResources.target.memoryMB;
-            vcpu = users.vmResources.target.vcpus;
-
-            shares = [
-              {
-                tag = "ro-store";
-                source = "/nix/store";
-                mountPoint = "/nix/.ro-store";
-                proto = "9p";
-              }
-            ];
-
-            interfaces =
-              if useTap then
-                [
-                  {
-                    type = "tap";
-                    id = network.tapTarget;
-                    mac = network.targetVmMac;
-                  }
-                ]
-              else
-                [
-                  {
-                    type = "user";
-                    id = "eth0";
-                    mac = network.targetVmMac;
-                  }
-                ];
-
-            forwardPorts = lib.optionals (!useTap) portForwards;
+          # ─── VM Base Configuration ───────────────────────────────────────
+          vmBase = {
+            vmName = "ssh-target";
+            serialPort = ports.console.targetSerial;
+            virtioPort = ports.console.targetVirtio;
+            memoryMB = resources.target.memoryMB;
+            vcpus = resources.target.vcpus;
           };
 
-          # ─── Networking ────────────────────────────────────────────────
+          # ─── Networking ──────────────────────────────────────────────────
+          vmNetworking = {
+            inherit useTap;
+            tapDevice = network.tapTarget;
+            macAddress = network.targetVmMac;
+            ipAddress = network.targetVmIp;
+            gateway = network.gateway;
+            hostPorts = portForwards;
+          };
+
           networking.hostName = "ssh-target";
           networking.firewall.allowedTCPPorts = allSshPorts;
 
-          networking.interfaces = lib.mkIf useTap {
-            eth0 = {
-              useDHCP = false;
-              ipv4.addresses = [
-                {
-                  address = network.targetVmIp;
-                  prefixLength = 24;
-                }
-              ];
-            };
-          };
-          networking.defaultGateway = lib.mkIf useTap {
-            address = network.gateway;
-            interface = "eth0";
-          };
-
-          # ─── Disable default sshd ──────────────────────────────────────
+          # ─── Disable default sshd ────────────────────────────────────────
           services.openssh.enable = false;
 
-          # ─── SSHD privilege separation user (required for sshd) ───────
+          # ─── SSHD privilege separation user (required for sshd) ──────────
           users.users.sshd = {
             isSystemUser = true;
             group = "sshd";
@@ -155,14 +101,14 @@ let
           };
           users.groups.sshd = { };
 
-          # ─── PAM configuration for sshd ───────────────────────────────
+          # ─── PAM configuration for sshd ──────────────────────────────────
           security.pam.services.sshd = {
             startSession = true;
             showMotd = true;
             unixAuth = true;
           };
 
-          # ─── Network Command Test Infrastructure ───────────────────────
+          # ─── Network Command Test Infrastructure ─────────────────────────
           # Reference: DESIGN_NETWORK_COMMANDS.md "VM Test Infrastructure"
 
           # Enable nftables with test rules for firewall inspection testing
@@ -192,9 +138,13 @@ let
           };
 
           # Enable connection tracking for conntrack -L testing
-          boot.kernelModules = [ "nf_conntrack" "dummy" "bridge" ];
+          boot.kernelModules = [
+            "nf_conntrack"
+            "dummy"
+            "bridge"
+          ];
 
-          # ─── Packages ──────────────────────────────────────────────────
+          # ─── Packages ────────────────────────────────────────────────────
           # Reference: DESIGN_NETWORK_COMMANDS.md "VM Test Infrastructure"
           environment.systemPackages = with pkgs; [
             coreutils
@@ -217,7 +167,7 @@ let
             tcpdump # packet capture for debugging
           ];
 
-          # ─── Test Users ────────────────────────────────────────────────
+          # ─── Test Users ──────────────────────────────────────────────────
           users.users.testuser = {
             isNormalUser = true;
             password = users.testuser.password;
@@ -264,7 +214,7 @@ let
           users.users.root.password = users.root.password;
           security.sudo.wheelNeedsPassword = false;
 
-          # ─── User Shell Configurations ─────────────────────────────────
+          # ─── User Shell Configurations ───────────────────────────────────
           system.activationScripts.user-shells = ''
             # testuser - simple prompt
             mkdir -p /home/testuser
@@ -294,7 +244,7 @@ let
             chown slowuser:users /home/slowuser/.bashrc
           '';
 
-          # ─── Generate SSH Host Keys ────────────────────────────────────
+          # ─── Generate SSH Host Keys ──────────────────────────────────────
           # All sshd daemons share the same host keys
           system.activationScripts.ssh-host-keys = ''
             if [ ! -f /etc/ssh/ssh_host_ed25519_key ]; then
@@ -305,185 +255,145 @@ let
             fi
           '';
 
-          # ─── SSHD Services (merged) ─────────────────────────────────────
-          systemd.services =
-            (lib.mapAttrs' (
-              name: cfg:
-              lib.nameValuePair "sshd-${name}" {
-                description = "SSH Daemon - ${name} (${cfg.description})";
-                wantedBy = [ "multi-user.target" ];
-                after = [
-                  "network.target"
-                  "ssh-host-keys.service"
-                ];
-                wants = [ "ssh-host-keys.service" ];
-                serviceConfig = {
-                  ExecStart = "${pkgs.openssh}/bin/sshd -D -f ${mkSshdConfig name cfg}";
-                  Restart = if cfg ? restartInterval then "always" else "on-failure";
-                }
-                // (lib.optionalAttrs (cfg ? restartInterval) {
-                  RestartSec = toString cfg.restartInterval;
-                });
-              }
-            ) sshd)
-            // {
-              # ─── SSH Host Keys Service ─────────────────────────────────────
-              # All sshd daemons share the same host keys
-              ssh-host-keys = {
-                description = "Generate SSH host keys";
-                wantedBy = [ "multi-user.target" ];
-                before = lib.mapAttrsToList (name: cfg: "sshd-${name}.service") sshd;
-                serviceConfig = {
-                  Type = "oneshot";
-                  RemainAfterExit = true;
-                  ExecStart = pkgs.writeShellScript "generate-ssh-keys" ''
-                    mkdir -p /etc/ssh
-                    chmod 755 /etc/ssh
-                    if [ ! -f /etc/ssh/ssh_host_ed25519_key ]; then
-                      ${pkgs.openssh}/bin/ssh-keygen -t ed25519 -f /etc/ssh/ssh_host_ed25519_key -N ""
-                      chmod 600 /etc/ssh/ssh_host_ed25519_key
-                      chmod 644 /etc/ssh/ssh_host_ed25519_key.pub
-                    fi
-                    if [ ! -f /etc/ssh/ssh_host_rsa_key ]; then
-                      ${pkgs.openssh}/bin/ssh-keygen -t rsa -b 4096 -f /etc/ssh/ssh_host_rsa_key -N ""
-                      chmod 600 /etc/ssh/ssh_host_rsa_key
-                      chmod 644 /etc/ssh/ssh_host_rsa_key.pub
-                    fi
-                  '';
-                };
-              };
+          # ─── SSHD Services ───────────────────────────────────────────────
+          systemd.services = (sshdLib.mkSshdServices sshd) // {
+            # SSH Host Keys Service
+            ssh-host-keys = sshdLib.mkSshHostKeysServiceWithBefore sshd;
 
-              # ─── Netem Network Emulation ───────────────────────────────────
-              # Uses nftables to redirect and mark packets, tc/netem for delay/loss
-              netem-setup = {
-                description = "Setup netem network emulation with nft marks";
-                wantedBy = [ "multi-user.target" ];
-                after = [ "network.target" ];
-                serviceConfig = {
-                  Type = "oneshot";
-                  RemainAfterExit = true;
-                  ExecStart = pkgs.writeShellScript "netem-setup" ''
-                    set -e
+            # ─── Netem Network Emulation ─────────────────────────────────
+            # Uses nftables to redirect and mark packets, tc/netem for delay/loss
+            netem-setup = {
+              description = "Setup netem network emulation with nft marks";
+              wantedBy = [ "multi-user.target" ];
+              after = [ "network.target" ];
+              serviceConfig = {
+                Type = "oneshot";
+                RemainAfterExit = true;
+                ExecStart = pkgs.writeShellScript "netem-setup" ''
+                  set -e
 
-                    # Create base tc qdisc structure on loopback
-                    ${pkgs.iproute2}/bin/tc qdisc del dev lo root 2>/dev/null || true
-                    ${pkgs.iproute2}/bin/tc qdisc add dev lo root handle 1: prio bands 16
+                  # Create base tc qdisc structure on loopback
+                  ${pkgs.iproute2}/bin/tc qdisc del dev lo root 2>/dev/null || true
+                  ${pkgs.iproute2}/bin/tc qdisc add dev lo root handle 1: prio bands 16
 
-                    # Create nftables table for netem
-                    ${pkgs.nftables}/bin/nft add table inet netem 2>/dev/null || true
-                    ${pkgs.nftables}/bin/nft flush table inet netem
-                    ${pkgs.nftables}/bin/nft add chain inet netem output { type filter hook output priority -150 \; }
-                    ${pkgs.nftables}/bin/nft add chain inet netem prerouting { type nat hook prerouting priority -100 \; }
+                  # Create nftables table for netem
+                  ${pkgs.nftables}/bin/nft add table inet netem 2>/dev/null || true
+                  ${pkgs.nftables}/bin/nft flush table inet netem
+                  ${pkgs.nftables}/bin/nft add chain inet netem output { type filter hook output priority -150 \; }
+                  ${pkgs.nftables}/bin/nft add chain inet netem prerouting { type nat hook prerouting priority -100 \; }
 
-                    ${lib.concatStrings (
-                      lib.mapAttrsToList (name: cfg: ''
-                        # ─── ${name}: ${cfg.description} ───
-                        # Port ${toString cfg.degradedPort} -> mark ${toString cfg.mark} -> netem -> redirect to ${toString cfg.basePort}
+                  ${lib.concatStrings (
+                    lib.mapAttrsToList (name: cfg: ''
+                      # ─── ${name}: ${cfg.description} ───
+                      # Port ${toString cfg.degradedPort} -> mark ${toString cfg.mark} -> netem -> redirect to ${toString cfg.basePort}
 
-                        # Create tc class with netem for this profile
-                        ${pkgs.iproute2}/bin/tc qdisc add dev lo parent 1:${toString cfg.mark} handle ${toString (cfg.mark * 10)}: netem \
-                          delay ${cfg.delay}${if cfg.jitter != null then " ${cfg.jitter}" else ""}${
-                            if cfg.loss != null then " loss ${cfg.loss}" else ""
-                          } 2>/dev/null || true
+                      # Create tc class with netem for this profile
+                      ${pkgs.iproute2}/bin/tc qdisc add dev lo parent 1:${toString cfg.mark} handle ${toString (cfg.mark * 10)}: netem \
+                        delay ${cfg.delay}${if cfg.jitter != null then " ${cfg.jitter}" else ""}${
+                          if cfg.loss != null then " loss ${cfg.loss}" else ""
+                        } 2>/dev/null || true
 
-                        # tc filter: match packets with this mark -> route to netem class
-                        ${pkgs.iproute2}/bin/tc filter add dev lo parent 1: protocol ip prio ${toString cfg.mark} handle ${toString cfg.mark} fw flowid 1:${toString cfg.mark} 2>/dev/null || true
+                      # tc filter: match packets with this mark -> route to netem class
+                      ${pkgs.iproute2}/bin/tc filter add dev lo parent 1: protocol ip prio ${toString cfg.mark} handle ${toString cfg.mark} fw flowid 1:${toString cfg.mark} 2>/dev/null || true
 
-                        # nft: mark packets destined for degraded port
-                        ${pkgs.nftables}/bin/nft add rule inet netem output tcp dport ${toString cfg.degradedPort} meta mark set ${toString cfg.mark}
+                      # nft: mark packets destined for degraded port
+                      ${pkgs.nftables}/bin/nft add rule inet netem output tcp dport ${toString cfg.degradedPort} meta mark set ${toString cfg.mark}
 
-                        # nft: redirect degraded port to base port
-                        ${pkgs.nftables}/bin/nft add rule inet netem prerouting tcp dport ${toString cfg.degradedPort} redirect to :${toString cfg.basePort}
+                      # nft: redirect degraded port to base port
+                      ${pkgs.nftables}/bin/nft add rule inet netem prerouting tcp dport ${toString cfg.degradedPort} redirect to :${toString cfg.basePort}
 
-                      '') netem
-                    )}
+                    '') netem
+                  )}
 
-                    echo "Netem setup complete"
-                  '';
-                };
-              };
-
-              # ─── Network Test Infrastructure ──────────────────────────────
-              # Reference: DESIGN_NETWORK_COMMANDS.md "VM Test Infrastructure"
-
-              # Create test network namespace with veth pair
-              setup-test-netns = {
-                description = "Create test network namespace";
-                wantedBy = [ "multi-user.target" ];
-                after = [ "network.target" ];
-                serviceConfig = {
-                  Type = "oneshot";
-                  RemainAfterExit = true;
-                  ExecStart = pkgs.writeShellScript "setup-test-netns" ''
-                    set -e
-                    # Create namespace
-                    ${pkgs.iproute2}/bin/ip netns add testns 2>/dev/null || true
-
-                    # Create veth pair
-                    ${pkgs.iproute2}/bin/ip link add veth-host type veth peer name veth-ns 2>/dev/null || true
-                    ${pkgs.iproute2}/bin/ip link set veth-ns netns testns 2>/dev/null || true
-
-                    # Configure host side
-                    ${pkgs.iproute2}/bin/ip addr add 10.200.0.1/24 dev veth-host 2>/dev/null || true
-                    ${pkgs.iproute2}/bin/ip link set veth-host up
-
-                    # Configure namespace side
-                    ${pkgs.iproute2}/bin/ip netns exec testns ip addr add 10.200.0.2/24 dev veth-ns
-                    ${pkgs.iproute2}/bin/ip netns exec testns ip link set veth-ns up
-                    ${pkgs.iproute2}/bin/ip netns exec testns ip link set lo up
-
-                    echo "Test network namespace setup complete"
-                  '';
-                };
-              };
-
-              # Create dummy interface and bridge for network inspection testing
-              setup-test-interfaces = {
-                description = "Create test interfaces (dummy, bridge)";
-                wantedBy = [ "multi-user.target" ];
-                after = [ "network.target" ];
-                serviceConfig = {
-                  Type = "oneshot";
-                  RemainAfterExit = true;
-                  ExecStart = pkgs.writeShellScript "setup-test-interfaces" ''
-                    set -e
-                    # Create dummy interface for ethtool/ip testing
-                    ${pkgs.iproute2}/bin/ip link add dummy0 type dummy 2>/dev/null || true
-                    ${pkgs.iproute2}/bin/ip addr add 10.99.0.1/24 dev dummy0 2>/dev/null || true
-                    ${pkgs.iproute2}/bin/ip link set dummy0 up
-
-                    # Create bridge interface for bridge command testing
-                    ${pkgs.iproute2}/bin/ip link add testbr0 type bridge 2>/dev/null || true
-                    ${pkgs.iproute2}/bin/ip addr add 10.98.0.1/24 dev testbr0 2>/dev/null || true
-                    ${pkgs.iproute2}/bin/ip link set testbr0 up
-
-                    echo "Test interfaces setup complete"
-                  '';
-                };
-              };
-
-              # Setup traffic control qdiscs for tc command testing
-              setup-test-qdisc = {
-                description = "Setup test traffic control qdiscs";
-                wantedBy = [ "multi-user.target" ];
-                after = [ "network.target" "setup-test-interfaces.service" ];
-                wants = [ "setup-test-interfaces.service" ];
-                serviceConfig = {
-                  Type = "oneshot";
-                  RemainAfterExit = true;
-                  ExecStart = pkgs.writeShellScript "setup-test-qdisc" ''
-                    set -e
-                    # Add htb qdisc to dummy0 for tc inspection testing
-                    ${pkgs.iproute2}/bin/tc qdisc add dev dummy0 root handle 1: htb default 10 2>/dev/null || true
-                    ${pkgs.iproute2}/bin/tc class add dev dummy0 parent 1: classid 1:10 htb rate 100mbit 2>/dev/null || true
-
-                    echo "Test qdisc setup complete"
-                  '';
-                };
+                  echo "Netem setup complete"
+                '';
               };
             };
 
-          # ─── Test Files and MOTD ────────────────────────────────────────
+            # ─── Network Test Infrastructure ─────────────────────────────
+            # Reference: DESIGN_NETWORK_COMMANDS.md "VM Test Infrastructure"
+
+            # Create test network namespace with veth pair
+            setup-test-netns = {
+              description = "Create test network namespace";
+              wantedBy = [ "multi-user.target" ];
+              after = [ "network.target" ];
+              serviceConfig = {
+                Type = "oneshot";
+                RemainAfterExit = true;
+                ExecStart = pkgs.writeShellScript "setup-test-netns" ''
+                  set -e
+                  # Create namespace
+                  ${pkgs.iproute2}/bin/ip netns add testns 2>/dev/null || true
+
+                  # Create veth pair
+                  ${pkgs.iproute2}/bin/ip link add veth-host type veth peer name veth-ns 2>/dev/null || true
+                  ${pkgs.iproute2}/bin/ip link set veth-ns netns testns 2>/dev/null || true
+
+                  # Configure host side
+                  ${pkgs.iproute2}/bin/ip addr add 10.200.0.1/24 dev veth-host 2>/dev/null || true
+                  ${pkgs.iproute2}/bin/ip link set veth-host up
+
+                  # Configure namespace side
+                  ${pkgs.iproute2}/bin/ip netns exec testns ip addr add 10.200.0.2/24 dev veth-ns
+                  ${pkgs.iproute2}/bin/ip netns exec testns ip link set veth-ns up
+                  ${pkgs.iproute2}/bin/ip netns exec testns ip link set lo up
+
+                  echo "Test network namespace setup complete"
+                '';
+              };
+            };
+
+            # Create dummy interface and bridge for network inspection testing
+            setup-test-interfaces = {
+              description = "Create test interfaces (dummy, bridge)";
+              wantedBy = [ "multi-user.target" ];
+              after = [ "network.target" ];
+              serviceConfig = {
+                Type = "oneshot";
+                RemainAfterExit = true;
+                ExecStart = pkgs.writeShellScript "setup-test-interfaces" ''
+                  set -e
+                  # Create dummy interface for ethtool/ip testing
+                  ${pkgs.iproute2}/bin/ip link add dummy0 type dummy 2>/dev/null || true
+                  ${pkgs.iproute2}/bin/ip addr add 10.99.0.1/24 dev dummy0 2>/dev/null || true
+                  ${pkgs.iproute2}/bin/ip link set dummy0 up
+
+                  # Create bridge interface for bridge command testing
+                  ${pkgs.iproute2}/bin/ip link add testbr0 type bridge 2>/dev/null || true
+                  ${pkgs.iproute2}/bin/ip addr add 10.98.0.1/24 dev testbr0 2>/dev/null || true
+                  ${pkgs.iproute2}/bin/ip link set testbr0 up
+
+                  echo "Test interfaces setup complete"
+                '';
+              };
+            };
+
+            # Setup traffic control qdiscs for tc command testing
+            setup-test-qdisc = {
+              description = "Setup test traffic control qdiscs";
+              wantedBy = [ "multi-user.target" ];
+              after = [
+                "network.target"
+                "setup-test-interfaces.service"
+              ];
+              wants = [ "setup-test-interfaces.service" ];
+              serviceConfig = {
+                Type = "oneshot";
+                RemainAfterExit = true;
+                ExecStart = pkgs.writeShellScript "setup-test-qdisc" ''
+                  set -e
+                  # Add htb qdisc to dummy0 for tc inspection testing
+                  ${pkgs.iproute2}/bin/tc qdisc add dev dummy0 root handle 1: htb default 10 2>/dev/null || true
+                  ${pkgs.iproute2}/bin/tc class add dev dummy0 parent 1: classid 1:10 htb rate 100mbit 2>/dev/null || true
+
+                  echo "Test qdisc setup complete"
+                '';
+              };
+            };
+          };
+
+          # ─── Test Files and MOTD ─────────────────────────────────────────
           environment.etc = {
             "test-file.txt".text = ''
               This is a test file for ssh_cat_file testing.
